@@ -28,3 +28,10 @@
 - Preliminary filter cutoff and spike thresholds remain board-tuning items; M1.3 hardware acceptance is deferred to the M2 single-motor bring-up stage.
 - Debug and Release builds passed. RAM: 40,864/40,856 B; Flash: 66,660/39,696 B.
 - `app_imu.c` passed `-Wall -Wextra -Wshadow -Wconversion -Werror` syntax checking and GCC `-fanalyzer`.
+
+## 2026-07-11: M1 IMU non-blocking retry backoff
+- Replaced the IMU task's fixed blocking delay with an application-owned `20/50/100/200/500 ms` retry schedule, capped at 500 ms and reset by the first successful sensor read.
+- During backoff, `AppImu_Process()` skips I2C access but the IMU task still wakes at its normal bounded interval, publishes the current age/stale state, and sets its heartbeat every pass.
+- Added observable backoff count, current delay, and next-retry tick fields to `AppImuOutput`.
+- Debug and Release builds passed. RAM: 40,888 B; Flash: 66,900/39,764 B.
+- `app_imu.c` and `app_tasks.c` passed `-Wall -Wextra -Wshadow -Wconversion -Werror` syntax checking and GCC `-fanalyzer`.

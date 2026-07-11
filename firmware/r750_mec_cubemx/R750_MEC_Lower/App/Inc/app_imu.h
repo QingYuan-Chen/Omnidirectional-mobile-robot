@@ -42,6 +42,9 @@ typedef struct {
   uint32_t sample_age_ms;
   uint32_t read_error_count;
   uint32_t consecutive_error_count;
+  uint32_t backoff_count;
+  uint32_t retry_delay_ms;
+  uint32_t next_retry_tick_ms;
   uint32_t duplicate_count;
   uint32_t dropped_sample_count;
   uint32_t accel_update_accept_count;

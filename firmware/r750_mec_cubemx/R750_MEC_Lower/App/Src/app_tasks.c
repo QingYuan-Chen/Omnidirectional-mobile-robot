@@ -228,10 +228,7 @@ static void AppTasks_Imu(void *argument)
     taskEXIT_CRITICAL();
 
     (void)osEventFlagsSet(runtime_events, APP_EVENT_IMU_HEARTBEAT);
-    if (status != BSP_OK && status != BSP_BUSY &&
-        output.consecutive_error_count >= ROBOT_CONFIG_IMU_ERROR_BACKOFF_THRESHOLD) {
-      vTaskDelay(pdMS_TO_TICKS(ROBOT_CONFIG_IMU_ERROR_BACKOFF_MS));
-    }
+    (void)status;
   }
 }
 

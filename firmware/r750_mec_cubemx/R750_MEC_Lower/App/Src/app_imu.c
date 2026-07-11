@@ -25,10 +25,36 @@ static bool imu_calibrated;
 static uint32_t previous_sensor_timestamp;
 static float previous_acceleration_mps2[3];
 static float previous_angular_rate_rad_s[3];
+static uint32_t backoff_index;
+
+static const uint32_t app_imu_backoff_ms[] = {20U, 50U, 100U, 200U, 500U};
 
 static uint32_t AppImu_SaturatingIncrement(uint32_t value)
 {
   return value < UINT32_MAX ? value + 1U : UINT32_MAX;
+}
+
+static bool AppImu_TickIsBefore(uint32_t now_ms, uint32_t target_ms)
+{
+  return (int32_t)(now_ms - target_ms) < 0;
+}
+
+static void AppImu_StartBackoff(uint32_t now_ms)
+{
+  const uint32_t delay_ms = app_imu_backoff_ms[backoff_index];
+  imu_output.retry_delay_ms = delay_ms;
+  imu_output.next_retry_tick_ms = now_ms + delay_ms;
+  imu_output.backoff_count = AppImu_SaturatingIncrement(imu_output.backoff_count);
+  if (backoff_index + 1U < (uint32_t)(sizeof(app_imu_backoff_ms) / sizeof(app_imu_backoff_ms[0]))) {
+    backoff_index++;
+  }
+}
+
+static void AppImu_ResetBackoff(void)
+{
+  backoff_index = 0U;
+  imu_output.retry_delay_ms = 0U;
+  imu_output.next_retry_tick_ms = 0U;
 }
 
 static float AppImu_VectorNorm(const float vector[3])
@@ -120,6 +146,7 @@ BspStatus AppImu_Calibrate(void)
   memset(&imu_output, 0, sizeof(imu_output));
   imu_calibrated = false;
   previous_sensor_timestamp = 0U;
+  backoff_index = 0U;
   memset(previous_acceleration_mps2, 0, sizeof(previous_acceleration_mps2));
   memset(previous_angular_rate_rad_s, 0, sizeof(previous_angular_rate_rad_s));
   imu_output.flags = APP_IMU_FLAG_SENSOR_PRESENT;
@@ -240,6 +267,12 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
     return BSP_ERROR;
   }
 
+  if (imu_output.retry_delay_ms != 0U && AppImu_TickIsBefore(now_ms, imu_output.next_retry_tick_ms)) {
+    AppImu_UpdateStaleState(now_ms);
+    *output = imu_output;
+    return BSP_BUSY;
+  }
+
   BspImuSample sample;
   const BspStatus status = BspImu_ReadSample(&sample);
   if (status == BSP_BUSY) {
@@ -250,6 +283,7 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
   if (status != BSP_OK) {
     imu_output.read_error_count = AppImu_SaturatingIncrement(imu_output.read_error_count);
     imu_output.consecutive_error_count = AppImu_SaturatingIncrement(imu_output.consecutive_error_count);
+    AppImu_StartBackoff(now_ms);
     if (imu_output.consecutive_error_count >= ROBOT_CONFIG_IMU_ERROR_BACKOFF_THRESHOLD) {
       imu_output.flags |= APP_IMU_FLAG_SENSOR_FAULT;
       imu_output.flags &= ~(uint32_t)APP_IMU_FLAG_DATA_VALID;
@@ -258,6 +292,7 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
     *output = imu_output;
     return status;
   }
+  AppImu_ResetBackoff();
 
   const uint32_t timestamp_step = (sample.sensor_timestamp - previous_sensor_timestamp) & APP_IMU_TIMESTAMP_MASK;
   if (timestamp_step == 0U) {
