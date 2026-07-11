@@ -20,13 +20,16 @@ typedef enum {
   APP_IMU_FLAG_DATA_STALE = (1UL << 8U),
   APP_IMU_FLAG_ABSOLUTE_YAW_VALID = (1UL << 9U),
   APP_IMU_FLAG_TIMESTAMP_VALID = (1UL << 10U),
-  APP_IMU_FLAG_TILT_VALID = (1UL << 11U)
+  APP_IMU_FLAG_TILT_VALID = (1UL << 11U),
+  APP_IMU_FLAG_SAMPLE_SPIKE = (1UL << 12U)
 } AppImuFlags;
 
 typedef struct {
   BspImuSample raw_sample;
   float acceleration_mps2[3];
   float angular_rate_rad_s[3];
+  float filtered_acceleration_mps2[3];
+  float filtered_angular_rate_rad_s[3];
   float quaternion[4];
   float euler_rad[3];
   float gyro_bias_rad_s[3];
@@ -36,12 +39,15 @@ typedef struct {
   uint32_t sensor_timestamp;
   uint32_t host_tick_ms;
   uint32_t last_good_tick_ms;
+  uint32_t sample_age_ms;
   uint32_t read_error_count;
   uint32_t consecutive_error_count;
   uint32_t duplicate_count;
   uint32_t dropped_sample_count;
   uint32_t accel_update_accept_count;
   uint32_t accel_update_reject_count;
+  uint32_t spike_reject_count;
+  uint32_t consecutive_spike_count;
 } AppImuOutput;
 
 BspStatus AppImu_Calibrate(void);

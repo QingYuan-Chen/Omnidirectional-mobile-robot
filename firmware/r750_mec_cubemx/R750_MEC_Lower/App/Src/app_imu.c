@@ -23,6 +23,8 @@ static ImuEskf imu_filter;
 static AppImuOutput imu_output;
 static bool imu_calibrated;
 static uint32_t previous_sensor_timestamp;
+static float previous_acceleration_mps2[3];
+static float previous_angular_rate_rad_s[3];
 
 static uint32_t AppImu_SaturatingIncrement(uint32_t value)
 {
@@ -32,6 +34,38 @@ static uint32_t AppImu_SaturatingIncrement(uint32_t value)
 static float AppImu_VectorNorm(const float vector[3])
 {
   return sqrtf(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
+}
+
+static uint32_t AppImu_SaturatingAdd(uint32_t value, uint32_t increment)
+{
+  return UINT32_MAX - value < increment ? UINT32_MAX : value + increment;
+}
+
+static bool AppImu_IsSpike(const float acceleration_mps2[3], const float angular_rate_rad_s[3])
+{
+  float acceleration_delta[3];
+  float angular_rate_delta[3];
+  for (uint32_t axis = 0U; axis < 3U; ++axis) {
+    acceleration_delta[axis] = acceleration_mps2[axis] - previous_acceleration_mps2[axis];
+    angular_rate_delta[axis] = angular_rate_rad_s[axis] - previous_angular_rate_rad_s[axis];
+  }
+
+  return AppImu_VectorNorm(acceleration_delta) > ROBOT_CONFIG_IMU_ACCEL_SPIKE_LIMIT_MPS2 ||
+         AppImu_VectorNorm(angular_rate_delta) > ROBOT_CONFIG_IMU_GYRO_SPIKE_LIMIT_RAD_S;
+}
+
+static void AppImu_UpdateFilteredOutput(const float acceleration_mps2[3],
+                                        const float angular_rate_rad_s[3],
+                                        float delta_time_s)
+{
+  const float time_constant_s = 1.0f / (2.0f * APP_IMU_PI * ROBOT_CONFIG_IMU_OUTPUT_FILTER_CUTOFF_HZ);
+  const float alpha = delta_time_s / (time_constant_s + delta_time_s);
+  for (uint32_t axis = 0U; axis < 3U; ++axis) {
+    imu_output.filtered_acceleration_mps2[axis] +=
+      alpha * (acceleration_mps2[axis] - imu_output.filtered_acceleration_mps2[axis]);
+    imu_output.filtered_angular_rate_rad_s[axis] +=
+      alpha * (angular_rate_rad_s[axis] - imu_output.filtered_angular_rate_rad_s[axis]);
+  }
 }
 
 static void AppImu_ConvertToBodySi(const BspImuSample *sample,
@@ -73,6 +107,7 @@ static void AppImu_CopyFilterState(void)
 
 static void AppImu_UpdateStaleState(uint32_t now_ms)
 {
+  imu_output.sample_age_ms = now_ms - imu_output.last_good_tick_ms;
   if (!imu_calibrated || (now_ms - imu_output.last_good_tick_ms) > ROBOT_CONFIG_IMU_STALE_TIMEOUT_MS) {
     imu_output.flags |= APP_IMU_FLAG_DATA_STALE;
     imu_output.flags &= ~(uint32_t)APP_IMU_FLAG_DATA_VALID;
@@ -85,6 +120,8 @@ BspStatus AppImu_Calibrate(void)
   memset(&imu_output, 0, sizeof(imu_output));
   imu_calibrated = false;
   previous_sensor_timestamp = 0U;
+  memset(previous_acceleration_mps2, 0, sizeof(previous_acceleration_mps2));
+  memset(previous_angular_rate_rad_s, 0, sizeof(previous_angular_rate_rad_s));
   imu_output.flags = APP_IMU_FLAG_SENSOR_PRESENT;
 
   float acceleration_mean[3] = {0.0f};
@@ -173,13 +210,18 @@ BspStatus AppImu_Calibrate(void)
   previous_sensor_timestamp = latest_sample.sensor_timestamp;
   imu_output.raw_sample = latest_sample;
   memcpy(imu_output.acceleration_mps2, acceleration_mean, sizeof(acceleration_mean));
+  memcpy(imu_output.filtered_acceleration_mps2, acceleration_mean, sizeof(acceleration_mean));
+  memcpy(previous_acceleration_mps2, acceleration_mean, sizeof(acceleration_mean));
   for (uint32_t axis = 0U; axis < 3U; ++axis) {
     imu_output.angular_rate_rad_s[axis] = 0.0f;
+    imu_output.filtered_angular_rate_rad_s[axis] = 0.0f;
+    previous_angular_rate_rad_s[axis] = angular_rate_mean[axis];
   }
   imu_output.temperature_celsius = (float)latest_sample.temperature / 256.0f;
   imu_output.sensor_timestamp = latest_sample.sensor_timestamp;
   imu_output.host_tick_ms = latest_sample.host_tick_ms;
   imu_output.last_good_tick_ms = latest_sample.host_tick_ms;
+  imu_output.sample_age_ms = 0U;
   imu_output.read_error_count = read_error_count;
   imu_output.flags |= APP_IMU_FLAG_CALIBRATED | APP_IMU_FLAG_DATA_VALID | APP_IMU_FLAG_FILTER_INITIALIZED |
                       APP_IMU_FLAG_TIMESTAMP_VALID | APP_IMU_FLAG_TILT_VALID;
@@ -193,6 +235,7 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
     return BSP_INVALID_ARG;
   }
   if (!imu_calibrated) {
+    AppImu_UpdateStaleState(now_ms);
     *output = imu_output;
     return BSP_ERROR;
   }
@@ -226,27 +269,36 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
 
   if (timestamp_step > APP_IMU_MAX_TIMESTAMP_STEP) {
     previous_sensor_timestamp = sample.sensor_timestamp;
-    imu_output.dropped_sample_count = UINT32_MAX;
-    imu_output.flags |= APP_IMU_FLAG_SENSOR_FAULT | APP_IMU_FLAG_DATA_STALE;
+    imu_output.dropped_sample_count = AppImu_SaturatingAdd(imu_output.dropped_sample_count, timestamp_step - 1U);
+    imu_output.flags |= APP_IMU_FLAG_DATA_STALE;
     imu_output.flags &=
       ~((uint32_t)APP_IMU_FLAG_DATA_VALID | (uint32_t)APP_IMU_FLAG_TIMESTAMP_VALID |
         (uint32_t)APP_IMU_FLAG_FILTER_CONVERGED);
+    AppImu_UpdateStaleState(now_ms);
     *output = imu_output;
     return BSP_ERROR;
   }
 
   if (timestamp_step > 1U) {
     const uint32_t dropped = timestamp_step - 1U;
-    if (UINT32_MAX - imu_output.dropped_sample_count < dropped) {
-      imu_output.dropped_sample_count = UINT32_MAX;
-    } else {
-      imu_output.dropped_sample_count += dropped;
-    }
+    imu_output.dropped_sample_count = AppImu_SaturatingAdd(imu_output.dropped_sample_count, dropped);
   }
 
   float acceleration_mps2[3];
   float angular_rate_rad_s[3];
   AppImu_ConvertToBodySi(&sample, acceleration_mps2, angular_rate_rad_s);
+  previous_sensor_timestamp = sample.sensor_timestamp;
+  if (AppImu_IsSpike(acceleration_mps2, angular_rate_rad_s)) {
+    imu_output.spike_reject_count = AppImu_SaturatingIncrement(imu_output.spike_reject_count);
+    imu_output.consecutive_spike_count = AppImu_SaturatingIncrement(imu_output.consecutive_spike_count);
+    memcpy(previous_acceleration_mps2, acceleration_mps2, sizeof(previous_acceleration_mps2));
+    memcpy(previous_angular_rate_rad_s, angular_rate_rad_s, sizeof(previous_angular_rate_rad_s));
+    imu_output.flags |= APP_IMU_FLAG_SAMPLE_SPIKE;
+    imu_output.flags &= ~(uint32_t)APP_IMU_FLAG_DATA_VALID;
+    AppImu_UpdateStaleState(now_ms);
+    *output = imu_output;
+    return BSP_ERROR;
+  }
   float delta_time_s = (float)timestamp_step / ROBOT_CONFIG_IMU_ODR_HZ;
   if (delta_time_s > APP_IMU_MAX_FILTER_DELTA_TIME_S) {
     delta_time_s = APP_IMU_MAX_FILTER_DELTA_TIME_S;
@@ -262,23 +314,29 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
     return BSP_ERROR;
   }
 
-  previous_sensor_timestamp = sample.sensor_timestamp;
   imu_output.raw_sample = sample;
   memcpy(imu_output.acceleration_mps2, acceleration_mps2, sizeof(acceleration_mps2));
   for (uint32_t axis = 0U; axis < 3U; ++axis) {
     imu_output.angular_rate_rad_s[axis] = angular_rate_rad_s[axis] - imu_filter.gyro_bias_rad_s[axis];
   }
+  AppImu_UpdateFilteredOutput(
+    acceleration_mps2, imu_output.angular_rate_rad_s, delta_time_s);
+  memcpy(previous_acceleration_mps2, acceleration_mps2, sizeof(previous_acceleration_mps2));
+  memcpy(previous_angular_rate_rad_s, angular_rate_rad_s, sizeof(previous_angular_rate_rad_s));
   imu_output.temperature_celsius = (float)sample.temperature / 256.0f;
   imu_output.sensor_timestamp = sample.sensor_timestamp;
   imu_output.host_tick_ms = sample.host_tick_ms;
   imu_output.last_good_tick_ms = now_ms;
+  imu_output.sample_age_ms = 0U;
   imu_output.sequence = AppImu_SaturatingIncrement(imu_output.sequence);
   imu_output.consecutive_error_count = 0U;
+  imu_output.consecutive_spike_count = 0U;
   imu_output.flags |= APP_IMU_FLAG_SENSOR_PRESENT | APP_IMU_FLAG_CALIBRATED | APP_IMU_FLAG_DATA_VALID |
                       APP_IMU_FLAG_FILTER_INITIALIZED | APP_IMU_FLAG_TIMESTAMP_VALID | APP_IMU_FLAG_TILT_VALID;
   imu_output.flags &=
     ~((uint32_t)APP_IMU_FLAG_SENSOR_FAULT | (uint32_t)APP_IMU_FLAG_DATA_STALE |
       (uint32_t)APP_IMU_FLAG_ACCEL_UPDATE_USED | (uint32_t)APP_IMU_FLAG_VIBRATION_HIGH);
+  imu_output.flags &= ~(uint32_t)APP_IMU_FLAG_SAMPLE_SPIKE;
   if (accel_update_used) {
     imu_output.flags |= APP_IMU_FLAG_ACCEL_UPDATE_USED;
     imu_output.accel_update_accept_count = AppImu_SaturatingIncrement(imu_output.accel_update_accept_count);

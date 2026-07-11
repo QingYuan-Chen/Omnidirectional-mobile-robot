@@ -20,3 +20,11 @@
 - `cmake --build --preset Release --clean-first`: passed 57/57; RAM 40,760 B, Flash 39,276 B.
 - `bsp_uart.c` passed `-Wall -Wextra -Wshadow -Wconversion -Werror` syntax checking and GCC `-fanalyzer`.
 - Hardware fault injection has not yet been performed; UART parity/framing/noise/overrun recovery remains a board-validation item.
+
+## 2026-07-11: M1 IMU data-quality outputs
+- Added independent first-order filtered acceleration and angular-rate fields for control/telemetry. The ESKF continues to consume the validity-gated, unfiltered SI sample.
+- Added producer-owned `sample_age_ms`, configurable vector-delta spike rejection, and spike diagnostic counters.
+- Replaced the `UINT32_MAX` timestamp-jump sentinel with the real saturating dropped-sample total. A single timestamp jump now invalidates only the affected sample.
+- Preliminary filter cutoff and spike thresholds remain board-tuning items; M1.3 hardware acceptance is deferred to the M2 single-motor bring-up stage.
+- Debug and Release builds passed. RAM: 40,864/40,856 B; Flash: 66,660/39,696 B.
+- `app_imu.c` passed `-Wall -Wextra -Wshadow -Wconversion -Werror` syntax checking and GCC `-fanalyzer`.
