@@ -15,6 +15,8 @@ typedef struct {
   volatile uint32_t noise_error_count;
   volatile uint32_t framing_error_count;
   volatile uint32_t overrun_error_count;
+  volatile uint32_t rx_recovery_attempt_count;
+  volatile uint32_t rx_recovery_success_count;
   volatile uint32_t rx_restart_failure_count;
   volatile bool rx_recovery_pending;
 } BspUartContext;
@@ -57,6 +59,8 @@ static void BspUart_ResetContext(BspUartContext *context)
   context->noise_error_count = 0U;
   context->framing_error_count = 0U;
   context->overrun_error_count = 0U;
+  context->rx_recovery_attempt_count = 0U;
+  context->rx_recovery_success_count = 0U;
   context->rx_restart_failure_count = 0U;
   context->rx_recovery_pending = false;
 }
@@ -86,6 +90,31 @@ static void BspUart_RecordErrors(BspUartContext *context, uint32_t error_code)
   }
   if ((error_code & HAL_UART_ERROR_ORE) != 0U) {
     context->overrun_error_count++;
+  }
+}
+
+static void BspUart_RecordAndClearPendingErrors(BspUartContext *context)
+{
+  const uint32_t error_code = context->handle->ErrorCode;
+  if (error_code == HAL_UART_ERROR_NONE) {
+    return;
+  }
+
+  BspUart_RecordErrors(context, error_code);
+  __HAL_UART_CLEAR_PEFLAG(context->handle);
+  context->handle->ErrorCode = HAL_UART_ERROR_NONE;
+}
+
+static void BspUart_TryRecover(BspUartContext *context)
+{
+  if (!context->rx_recovery_pending || context->handle->RxState != HAL_UART_STATE_READY) {
+    return;
+  }
+
+  BspUart_RecordAndClearPendingErrors(context);
+  context->rx_recovery_attempt_count++;
+  if (BspUart_StartReceive(context) == BSP_OK) {
+    context->rx_recovery_success_count++;
   }
 }
 
@@ -124,9 +153,7 @@ void BspUart_Service(void)
 {
   for (uint32_t i = 0; i < BSP_UART_COUNT; ++i) {
     BspUartContext *context = &uart_contexts[i];
-    if (context->rx_recovery_pending && context->handle->RxState == HAL_UART_STATE_READY) {
-      (void)BspUart_StartReceive(context);
-    }
+    BspUart_TryRecover(context);
   }
 }
 
@@ -190,6 +217,8 @@ BspStatus BspUart_GetStats(BspUartPort port, BspUartStats *stats)
   stats->noise_error_count = context->noise_error_count;
   stats->framing_error_count = context->framing_error_count;
   stats->overrun_error_count = context->overrun_error_count;
+  stats->rx_recovery_attempt_count = context->rx_recovery_attempt_count;
+  stats->rx_recovery_success_count = context->rx_recovery_success_count;
   stats->rx_restart_failure_count = context->rx_restart_failure_count;
   stats->rx_buffer_overflow_count = context->overflow_count;
   return BSP_OK;
@@ -201,6 +230,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     BspUartContext *context = &uart_contexts[i];
     if (context->handle == huart) {
       if (huart->ErrorCode != HAL_UART_ERROR_NONE) {
+        context->rx_recovery_pending = true;
         return;
       }
       BspUart_PushByte(context, context->irq_byte);
@@ -215,11 +245,9 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
   for (uint32_t i = 0; i < BSP_UART_COUNT; ++i) {
     BspUartContext *context = &uart_contexts[i];
     if (context->handle == huart) {
-      BspUart_RecordErrors(context, huart->ErrorCode);
-      __HAL_UART_CLEAR_PEFLAG(huart);
-      if (huart->RxState == HAL_UART_STATE_READY) {
-        (void)BspUart_StartReceive(context);
-      }
+      BspUart_RecordAndClearPendingErrors(context);
+      context->rx_recovery_pending = true;
+      BspUart_TryRecover(context);
       return;
     }
   }

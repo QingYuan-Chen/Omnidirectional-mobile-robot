@@ -10,3 +10,13 @@
 - Added `.gitignore`; excluded build output, IDE state, CubeMX temporary files, local reference material, and the vendor source copy.
 - Created and pushed baseline commit `51c2ed5` (`chore: establish STM32 firmware baseline`).
 - Reclassified the task plan into baseline, board-validation, and TODO states; consolidated the approved execution directives into v2.
+
+## 2026-07-11: M0 UART receive recovery
+- Verified the STM32F4 HAL interrupt ordering before changing the callback flow: the HAL normally follows an errored receive-complete callback with `HAL_UART_ErrorCallback`, but the BSP no longer relies on that implicit ordering as its only recovery path.
+- An errored receive-complete callback now marks recovery pending. The error callback records/clears errors and attempts one restart only when `RxState` is Ready; `BspUart_Service()` provides the task-context fallback.
+- Added UART recovery attempt/success counters while retaining restart-failure and hardware error counters.
+- CubeMX CLI regeneration completed without overwriting the BSP change. CubeMX emitted unrelated local third-party pack warnings.
+- `cmake --build --preset Debug --clean-first`: passed 57/57; RAM 40,768 B, Flash 65,776 B.
+- `cmake --build --preset Release --clean-first`: passed 57/57; RAM 40,760 B, Flash 39,276 B.
+- `bsp_uart.c` passed `-Wall -Wextra -Wshadow -Wconversion -Werror` syntax checking and GCC `-fanalyzer`.
+- Hardware fault injection has not yet been performed; UART parity/framing/noise/overrun recovery remains a board-validation item.

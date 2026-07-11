@@ -12,6 +12,8 @@ typedef struct {
   uint32_t noise_error_count;
   uint32_t framing_error_count;
   uint32_t overrun_error_count;
+  uint32_t rx_recovery_attempt_count;
+  uint32_t rx_recovery_success_count;
   uint32_t rx_restart_failure_count;
   uint32_t rx_buffer_overflow_count;
 } BspUartStats;
