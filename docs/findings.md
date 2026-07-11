@@ -46,6 +46,24 @@
 
 The M1 implementation will add explicitly named filtered acceleration/angular-rate fields for control and telemetry. They will not replace `raw_sample` or the ESKF input path.
 
+### M1 Fault and Recovery Semantics
+
+| State | Meaning | Safety behavior |
+|---|---|---|
+| `HEALTHY` | Current sample and finite initialized estimator passed the processed-data gates | Processed IMU output may be consumed |
+| `TRANSIENT_DEGRADED` | A single sensor access, timestamp, or spike failure affected the current sample | Inhibit motion without permanent latching |
+| `PERSISTENT_SENSOR_FAULT` | Consecutive sensor/spike failures reached the configured threshold | Keep motion inhibited and continue retry/heartbeat |
+| `ESTIMATOR_FAULT` | ESKF update produced an invalid internal state; reinitialization is attempted from calibration bias | Keep motion inhibited; require stable recovery samples |
+| `RECOVERING` | Sensor reads and estimator updates have resumed, but the stable-sample threshold is not complete | Keep `DATA_VALID` clear until recovery completes |
+
+Task heartbeat status remains separate in `AppRuntimeSnapshot.critical_tasks_alive`. Only repeated task-heartbeat loss is permanently latched at this stage; IMU degradation drives `motion_inhibited` while retry and recovery continue.
+
+### M2 Motor-Control Boundary
+
+- The present hardware has no motor-current ADC feedback, so M2 will not create a pseudo current loop.
+- The executable baseline is a 100 Hz wheel-speed PI controller with feedforward, conditional integration, ramping, and saturation. A position outer-loop target interface may be reserved without implementing position control in M2.
+- LQR/MPC are deferred from the per-motor M2 loop. They can be reconsidered at the chassis/body-motion layer after four-wheel identification, timing, saturation, and odometry are validated.
+
 ### GPIO Assignments
 - Button: PE1 (USER_Btn)
 - LED1: PB0, LED2: PB1

@@ -168,26 +168,30 @@ static void AppTasks_Safety(void *argument)
                                (flags & APP_EVENT_CRITICAL_HEARTBEATS) == APP_EVENT_CRITICAL_HEARTBEATS;
     (void)osEventFlagsClear(runtime_events, APP_EVENT_CRITICAL_HEARTBEATS);
 
-    bool enter_fault = false;
+    bool stop_motion = false;
     taskENTER_CRITICAL();
-    const uint32_t imu_flags = runtime_snapshot.imu.flags;
-    const bool imu_healthy = (imu_flags & (APP_IMU_FLAG_CALIBRATED | APP_IMU_FLAG_DATA_VALID)) ==
-                               (APP_IMU_FLAG_CALIBRATED | APP_IMU_FLAG_DATA_VALID) &&
-                             (imu_flags & (APP_IMU_FLAG_SENSOR_FAULT | APP_IMU_FLAG_DATA_STALE)) == 0U;
+    const bool imu_healthy = runtime_snapshot.imu.health == APP_IMU_HEALTH_HEALTHY;
+    runtime_snapshot.critical_tasks_alive = tasks_healthy;
     if (tasks_healthy) {
       runtime_snapshot.health_miss_count = 0U;
     } else if (runtime_snapshot.health_miss_count < UINT32_MAX) {
       runtime_snapshot.health_miss_count++;
     }
 
+    const bool inhibit_motion = runtime_snapshot.fault_latched || !tasks_healthy || !imu_healthy;
+    if (inhibit_motion && !runtime_snapshot.motion_inhibited) {
+      stop_motion = true;
+    }
+    runtime_snapshot.motion_inhibited = inhibit_motion;
+
     if (!runtime_snapshot.fault_latched &&
-        (runtime_snapshot.health_miss_count >= ROBOT_CONFIG_HEALTH_MISS_LIMIT || !imu_healthy)) {
+        runtime_snapshot.health_miss_count >= ROBOT_CONFIG_HEALTH_MISS_LIMIT) {
       runtime_snapshot.fault_latched = true;
-      enter_fault = true;
+      stop_motion = true;
     }
     taskEXIT_CRITICAL();
 
-    if (enter_fault) {
+    if (stop_motion) {
       BspMotor_EmergencyCoastAll();
     }
 

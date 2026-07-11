@@ -35,3 +35,12 @@
 - Added observable backoff count, current delay, and next-retry tick fields to `AppImuOutput`.
 - Debug and Release builds passed. RAM: 40,888 B; Flash: 66,900/39,764 B.
 - `app_imu.c` and `app_tasks.c` passed `-Wall -Wextra -Wshadow -Wconversion -Werror` syntax checking and GCC `-fanalyzer`.
+
+## 2026-07-11: M1 IMU fault classification and stable recovery
+- Added explicit healthy, transient-degraded, persistent-sensor-fault, recovering, and estimator-fault states. Critical-task heartbeat status is published separately from IMU health.
+- A single I2C error, timestamp discontinuity, or rejected spike invalidates only the affected output. Three consecutive sensor/spike failures escalate to persistent sensor fault.
+- ESKF failure is classified separately and triggers reinitialization from the stationary calibration bias. `DATA_VALID` is restored only after eight timestamp-continuous samples with an initialized finite estimator.
+- Safety now uses recoverable IMU health to inhibit motion without permanently latching the robot. Repeated critical-task heartbeat loss remains latching.
+- M1.3 board acceptance is deferred to the M2 single-motor bring-up. M2 is confirmed as speed PI + feedforward with no pseudo current loop; a position outer-loop interface may be reserved.
+- Debug and Release clean builds passed 57/57, followed by successful incremental rebuilds after the final state-severity correction. RAM: 40,928 B; Flash: 67,552/40,116 B.
+- `app_imu.c`, `app_tasks.c`, and `imu_eskf.c` passed `-Wall -Wextra -Wshadow -Wconversion -Werror` syntax checking and GCC `-fanalyzer`.

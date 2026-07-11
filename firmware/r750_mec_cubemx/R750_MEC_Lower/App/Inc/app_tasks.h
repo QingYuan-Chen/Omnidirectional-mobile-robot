@@ -23,6 +23,8 @@ typedef struct {
   uint16_t battery_millivolts;
   uint32_t health_miss_count;
   uint32_t stack_free_bytes[APP_TASK_COUNT];
+  bool critical_tasks_alive;
+  bool motion_inhibited;
   bool fault_latched;
 } AppRuntimeSnapshot;
 

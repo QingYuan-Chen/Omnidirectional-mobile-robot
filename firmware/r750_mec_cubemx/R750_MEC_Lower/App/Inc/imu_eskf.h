@@ -36,6 +36,7 @@ bool ImuEskf_Update(ImuEskf *filter,
                     bool *vibration_high);
 void ImuEskf_GetEulerRad(const ImuEskf *filter, float euler_rad[3]);
 bool ImuEskf_IsConverged(const ImuEskf *filter);
+bool ImuEskf_IsStateFinite(const ImuEskf *filter);
 
 #ifdef __cplusplus
 }

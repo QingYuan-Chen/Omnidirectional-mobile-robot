@@ -131,8 +131,11 @@ static void ImuEskf_SymmetrizeCovariance(ImuEskf *filter)
   }
 }
 
-static bool ImuEskf_StateIsFinite(const ImuEskf *filter)
+bool ImuEskf_IsStateFinite(const ImuEskf *filter)
 {
+  if (filter == NULL || !filter->initialized) {
+    return false;
+  }
   for (uint32_t i = 0U; i < 4U; ++i) {
     if (!isfinite(filter->quaternion[i])) {
       return false;
@@ -439,11 +442,11 @@ bool ImuEskf_Update(ImuEskf *filter,
   *accel_update_used = false;
   *vibration_high = false;
   ImuEskf_Predict(filter, angular_rate_rad_s, delta_time_s);
-  if (!ImuEskf_StateIsFinite(filter)) {
+  if (!ImuEskf_IsStateFinite(filter)) {
     return false;
   }
   *accel_update_used = ImuEskf_CorrectAcceleration(filter, acceleration_mps2, vibration_high);
-  return ImuEskf_StateIsFinite(filter);
+  return ImuEskf_IsStateFinite(filter);
 }
 
 void ImuEskf_GetEulerRad(const ImuEskf *filter, float euler_rad[3])

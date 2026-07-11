@@ -25,7 +25,9 @@ static bool imu_calibrated;
 static uint32_t previous_sensor_timestamp;
 static float previous_acceleration_mps2[3];
 static float previous_angular_rate_rad_s[3];
+static float calibration_gyro_bias_rad_s[3];
 static uint32_t backoff_index;
+static bool recovery_required;
 
 static const uint32_t app_imu_backoff_ms[] = {20U, 50U, 100U, 200U, 500U};
 
@@ -55,6 +57,65 @@ static void AppImu_ResetBackoff(void)
   backoff_index = 0U;
   imu_output.retry_delay_ms = 0U;
   imu_output.next_retry_tick_ms = 0U;
+}
+
+static void AppImu_MarkSensorFailure(bool persistent)
+{
+  recovery_required = true;
+  imu_output.stable_sample_count = 0U;
+  imu_output.flags |= APP_IMU_FLAG_SENSOR_DEGRADED;
+  imu_output.flags &= ~((uint32_t)APP_IMU_FLAG_DATA_VALID | (uint32_t)APP_IMU_FLAG_RECOVERING);
+  if (persistent || (imu_output.flags & APP_IMU_FLAG_SENSOR_FAULT) != 0U) {
+    imu_output.health = APP_IMU_HEALTH_PERSISTENT_SENSOR_FAULT;
+    imu_output.flags |= APP_IMU_FLAG_SENSOR_FAULT;
+  } else if ((imu_output.flags & APP_IMU_FLAG_ESTIMATOR_FAULT) != 0U) {
+    imu_output.health = APP_IMU_HEALTH_ESTIMATOR_FAULT;
+  } else {
+    imu_output.health = APP_IMU_HEALTH_TRANSIENT_DEGRADED;
+  }
+}
+
+static void AppImu_MarkEstimatorFailure(const float acceleration_mps2[3])
+{
+  recovery_required = true;
+  imu_output.stable_sample_count = 0U;
+  imu_output.estimator_fault_count = AppImu_SaturatingIncrement(imu_output.estimator_fault_count);
+  imu_output.health = APP_IMU_HEALTH_ESTIMATOR_FAULT;
+  imu_output.flags |= APP_IMU_FLAG_ESTIMATOR_FAULT;
+  imu_output.flags &= ~((uint32_t)APP_IMU_FLAG_DATA_VALID | (uint32_t)APP_IMU_FLAG_RECOVERING |
+                        (uint32_t)APP_IMU_FLAG_FILTER_CONVERGED | (uint32_t)APP_IMU_FLAG_TILT_VALID);
+  if (ImuEskf_Init(&imu_filter, acceleration_mps2, calibration_gyro_bias_rad_s)) {
+    imu_output.flags |= APP_IMU_FLAG_FILTER_INITIALIZED;
+  } else {
+    imu_output.flags &= ~(uint32_t)APP_IMU_FLAG_FILTER_INITIALIZED;
+  }
+}
+
+static void AppImu_UpdateRecovery(bool timestamp_continuous)
+{
+  if (!recovery_required) {
+    imu_output.health = APP_IMU_HEALTH_HEALTHY;
+    imu_output.flags |= APP_IMU_FLAG_DATA_VALID;
+    return;
+  }
+
+  if (timestamp_continuous && ImuEskf_IsStateFinite(&imu_filter)) {
+    imu_output.stable_sample_count = AppImu_SaturatingIncrement(imu_output.stable_sample_count);
+  } else {
+    imu_output.stable_sample_count = 0U;
+  }
+
+  if (imu_output.stable_sample_count >= ROBOT_CONFIG_IMU_RECOVERY_STABLE_SAMPLES) {
+    recovery_required = false;
+    imu_output.health = APP_IMU_HEALTH_HEALTHY;
+    imu_output.flags |= APP_IMU_FLAG_DATA_VALID;
+    imu_output.flags &= ~((uint32_t)APP_IMU_FLAG_SENSOR_DEGRADED | (uint32_t)APP_IMU_FLAG_SENSOR_FAULT |
+                          (uint32_t)APP_IMU_FLAG_RECOVERING | (uint32_t)APP_IMU_FLAG_ESTIMATOR_FAULT);
+  } else {
+    imu_output.health = APP_IMU_HEALTH_RECOVERING;
+    imu_output.flags |= APP_IMU_FLAG_RECOVERING;
+    imu_output.flags &= ~(uint32_t)APP_IMU_FLAG_DATA_VALID;
+  }
 }
 
 static float AppImu_VectorNorm(const float vector[3])
@@ -149,6 +210,8 @@ BspStatus AppImu_Calibrate(void)
   backoff_index = 0U;
   memset(previous_acceleration_mps2, 0, sizeof(previous_acceleration_mps2));
   memset(previous_angular_rate_rad_s, 0, sizeof(previous_angular_rate_rad_s));
+  memset(calibration_gyro_bias_rad_s, 0, sizeof(calibration_gyro_bias_rad_s));
+  recovery_required = false;
   imu_output.flags = APP_IMU_FLAG_SENSOR_PRESENT;
 
   float acceleration_mean[3] = {0.0f};
@@ -234,6 +297,7 @@ BspStatus AppImu_Calibrate(void)
   }
 
   imu_calibrated = true;
+  memcpy(calibration_gyro_bias_rad_s, angular_rate_mean, sizeof(calibration_gyro_bias_rad_s));
   previous_sensor_timestamp = latest_sample.sensor_timestamp;
   imu_output.raw_sample = latest_sample;
   memcpy(imu_output.acceleration_mps2, acceleration_mean, sizeof(acceleration_mean));
@@ -250,6 +314,8 @@ BspStatus AppImu_Calibrate(void)
   imu_output.last_good_tick_ms = latest_sample.host_tick_ms;
   imu_output.sample_age_ms = 0U;
   imu_output.read_error_count = read_error_count;
+  imu_output.health = APP_IMU_HEALTH_HEALTHY;
+  imu_output.stable_sample_count = ROBOT_CONFIG_IMU_RECOVERY_STABLE_SAMPLES;
   imu_output.flags |= APP_IMU_FLAG_CALIBRATED | APP_IMU_FLAG_DATA_VALID | APP_IMU_FLAG_FILTER_INITIALIZED |
                       APP_IMU_FLAG_TIMESTAMP_VALID | APP_IMU_FLAG_TILT_VALID;
   AppImu_CopyFilterState();
@@ -284,10 +350,8 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
     imu_output.read_error_count = AppImu_SaturatingIncrement(imu_output.read_error_count);
     imu_output.consecutive_error_count = AppImu_SaturatingIncrement(imu_output.consecutive_error_count);
     AppImu_StartBackoff(now_ms);
-    if (imu_output.consecutive_error_count >= ROBOT_CONFIG_IMU_ERROR_BACKOFF_THRESHOLD) {
-      imu_output.flags |= APP_IMU_FLAG_SENSOR_FAULT;
-      imu_output.flags &= ~(uint32_t)APP_IMU_FLAG_DATA_VALID;
-    }
+    AppImu_MarkSensorFailure(
+      imu_output.consecutive_error_count >= ROBOT_CONFIG_IMU_PERSISTENT_FAULT_THRESHOLD);
     AppImu_UpdateStaleState(now_ms);
     *output = imu_output;
     return status;
@@ -309,6 +373,7 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
     imu_output.flags &=
       ~((uint32_t)APP_IMU_FLAG_DATA_VALID | (uint32_t)APP_IMU_FLAG_TIMESTAMP_VALID |
         (uint32_t)APP_IMU_FLAG_FILTER_CONVERGED);
+    AppImu_MarkSensorFailure(false);
     AppImu_UpdateStaleState(now_ms);
     *output = imu_output;
     return BSP_ERROR;
@@ -329,7 +394,8 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
     memcpy(previous_acceleration_mps2, acceleration_mps2, sizeof(previous_acceleration_mps2));
     memcpy(previous_angular_rate_rad_s, angular_rate_rad_s, sizeof(previous_angular_rate_rad_s));
     imu_output.flags |= APP_IMU_FLAG_SAMPLE_SPIKE;
-    imu_output.flags &= ~(uint32_t)APP_IMU_FLAG_DATA_VALID;
+    AppImu_MarkSensorFailure(
+      imu_output.consecutive_spike_count >= ROBOT_CONFIG_IMU_PERSISTENT_FAULT_THRESHOLD);
     AppImu_UpdateStaleState(now_ms);
     *output = imu_output;
     return BSP_ERROR;
@@ -343,8 +409,8 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
   bool vibration_high = false;
   if (!ImuEskf_Update(
         &imu_filter, angular_rate_rad_s, acceleration_mps2, delta_time_s, &accel_update_used, &vibration_high)) {
-    imu_output.flags |= APP_IMU_FLAG_SENSOR_FAULT;
-    imu_output.flags &= ~(uint32_t)APP_IMU_FLAG_DATA_VALID;
+    AppImu_MarkEstimatorFailure(acceleration_mps2);
+    AppImu_UpdateStaleState(now_ms);
     *output = imu_output;
     return BSP_ERROR;
   }
@@ -366,11 +432,11 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
   imu_output.sequence = AppImu_SaturatingIncrement(imu_output.sequence);
   imu_output.consecutive_error_count = 0U;
   imu_output.consecutive_spike_count = 0U;
-  imu_output.flags |= APP_IMU_FLAG_SENSOR_PRESENT | APP_IMU_FLAG_CALIBRATED | APP_IMU_FLAG_DATA_VALID |
+  imu_output.flags |= APP_IMU_FLAG_SENSOR_PRESENT | APP_IMU_FLAG_CALIBRATED |
                       APP_IMU_FLAG_FILTER_INITIALIZED | APP_IMU_FLAG_TIMESTAMP_VALID | APP_IMU_FLAG_TILT_VALID;
   imu_output.flags &=
-    ~((uint32_t)APP_IMU_FLAG_SENSOR_FAULT | (uint32_t)APP_IMU_FLAG_DATA_STALE |
-      (uint32_t)APP_IMU_FLAG_ACCEL_UPDATE_USED | (uint32_t)APP_IMU_FLAG_VIBRATION_HIGH);
+    ~((uint32_t)APP_IMU_FLAG_DATA_STALE | (uint32_t)APP_IMU_FLAG_ACCEL_UPDATE_USED |
+      (uint32_t)APP_IMU_FLAG_VIBRATION_HIGH);
   imu_output.flags &= ~(uint32_t)APP_IMU_FLAG_SAMPLE_SPIKE;
   if (accel_update_used) {
     imu_output.flags |= APP_IMU_FLAG_ACCEL_UPDATE_USED;
@@ -381,6 +447,7 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
   if (vibration_high) {
     imu_output.flags |= APP_IMU_FLAG_VIBRATION_HIGH;
   }
+  AppImu_UpdateRecovery(timestamp_step == 1U);
   AppImu_CopyFilterState();
   *output = imu_output;
   return BSP_OK;
