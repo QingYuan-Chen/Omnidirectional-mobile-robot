@@ -1,0 +1,33 @@
+# Local IDE state
+.idea/
+**/.idea/
+CMakeUserPresets.json
+
+# Build and generated temporary output
+build/
+**/build/
+MXTmpFiles/
+**/MXTmpFiles/
+*.o
+*.obj
+*.su
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.d
+*_save
+*.tmp_save
+
+# CubeMX local metadata; the .ioc file is the source of truth
+.mxproject
+**/.mxproject
+
+# Vendor material is kept locally for reference only
+/参考/
+/firmware/vendor_reference/
+
+# OS noise
+Thumbs.db
+Desktop.ini

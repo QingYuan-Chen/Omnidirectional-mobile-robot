@@ -1,0 +1,7 @@
+config load "C:\Users\MECHREU\Desktop\Mobile_robot_lower_level_machine\firmware\r750_mec_cubemx\R750_MEC_Lower.ioc"
+project toolchain CMake
+project compiler GCC
+project path "C:\Users\MECHREU\Desktop\Mobile_robot_lower_level_machine\firmware\r750_mec_cubemx"
+project name R750_MEC_Lower
+project generate
+exit
