@@ -1,34 +1,62 @@
-# Task Plan: IMU Data Refactor + Single Motor PID + HMI
+# 下位机固件任务计划
 
-## Phases
+## 状态定义
 
-### Phase 1: IMU Data Validity Model & Fault Backoff
-- [ ] 1.1 Refactor `AppImuOutput` flags: split raw vs processed validity
-- [ ] 1.2 Add low-pass filter for acceleration and angular rate
-- [ ] 1.3 Add anomaly jump detection (spike rejection)
-- [ ] 1.4 Add `sample_age_ms` field (time since last good sample)
-- [ ] 1.5 Improve I2C fault backoff: exponential backoff with max cap
-- [ ] 1.6 Carry timestamp, sequence, valid_flags, error_count explicitly
-- [ ] 1.7 Ensure raw data is debug-only; control uses processed data
+- `[基线]`：软件实现已经存在，并通过构建或静态检查。
+- `[待板测]`：软件实现已经存在，但仍需硬件验证。
+- `[待实现]`：尚未实现。
 
-### Phase 2: Single Motor Closed-Loop PID
-- [ ] 2.1 Design generic PID controller struct (reusable for 4 motors)
-- [ ] 2.2 Implement RPM/RPS conversion from encoder delta
-- [ ] 2.3 Implement PID with anti-windup, target ramp, deadband
-- [ ] 2.4 Wire MA motor: encoder read → PID → PWM output
-- [ ] 2.5 Zero target → Brake; fault → Coast safety path
-- [ ] 2.6 Add command timeout (500ms) for motor commands
+## M0：仓库、规划与阻塞缺陷
 
-### Phase 3: Human-Machine Interaction
-- [ ] 3.1 Button: short press start/stop, long press emergency stop
-- [ ] 3.2 LED: multi-state (startup/ready/running/fault)
-- [ ] 3.3 Buzzer: non-blocking state machine with tone patterns
-- [ ] 3.4 UART4: command parser for target RPM, start/stop, PID params
-- [ ] 3.5 Monitor: extend to report stack, heap, battery, IMU, PID status
+- `[基线]` 初始化 Git 仓库、排除生成物与参考资料，并向 `origin/main` 推送基线。
+- `[基线]` 记录 FreeRTOS 任务框架、QMI8658A 同步读取、静止标定和 6 状态 ESKF 设计。
+- `[待实现]` 修复 UART 接收完成回调检测到错误后无法可靠恢复接收的问题。
+- `[待实现]` 使用 Debug/Release 构建、严格告警和静态分析验证 UART 修复。
 
-## Decisions
-- Control period: 10ms (100 Hz)
-- PID output range: -4200 to +4200
-- Encoder resolution: 30720 counts/wheel revolution
-- MA motor as default test motor
-- No mecanum kinematics in this phase
+## M1：IMU 数据质量与可恢复故障
+
+- `[基线]` 输出原始帧、传感器时间戳、主机时刻、序号、错误计数、丢样/重复计数和处理后有效性标志。
+- `[待板测]` 验证 QMI8658A DRDY、同步采样锁、轴映射、量程、ODR 和时间戳回绕。
+- `[待实现]` 增加独立的滤波加速度/角速度输出，供控制和遥测使用；不滤波 ESKF 输入。
+- `[待实现]` 增加可配置的突变拒绝与诊断计数，最终阈值由板上日志确定。
+- `[待实现]` 在 `AppImuOutput` 增加 `sample_age_ms`。
+- `[待实现]` 将阻塞式固定延迟改为非阻塞 `20/50/100/200/500 ms` 退避。
+- `[待实现]` 分离任务存活、瞬时传感器降级、持久传感器故障和估计器故障。
+- `[待实现]` 恢复处理后有效状态前，要求连续稳定的有效样本。
+- `[待实现]` 删除 `UINT32_MAX` 丢样哨兵，保留真实的饱和计数。
+- `[待板测]` 验证干扰恢复、数据陈旧、拔插、任务栈余量和 CPU 占用。
+
+## M2：单电机闭环控制
+
+- `[待实现]` 实现 UART4 最小文本调试台：目标 RPM、停止、PID 参数和 50 ms 遥测。
+- `[待实现]` 对 MA 进行开环正反转标定，在 BSP 层统一电机和编码器符号。
+- `[待实现]` 实现不依赖 HAL 的通用 PID，包含条件积分、限幅和目标斜坡。
+- `[待实现]` 根据每轮 30720 计数将编码器增量换算为轮速 RPM。
+- `[待实现]` 增加适合 10 ms 控制周期的实测转速滤波。
+- `[待实现]` 在 `controlTask` 接入 MA 编码器 -> PID -> 电机输出链路。
+- `[待实现]` 实现 500 ms 命令超时、受控停车和停稳后 Brake。
+- `[待实现]` 为 PID 和换算函数增加 host 端单元测试。
+- `[待板测]` 验证 100/200/300 RPM 阶跃、稳态误差小于 5%、无持续振荡和命令超时停车。
+
+## M3：人机交互
+
+- `[基线]` 仅在初始化、标定和滤波器就绪后发出 0.5 s 启动提示音。
+- `[待实现]` 根据原理图确认 PE1 按键极性和上下拉，并增加消抖。
+- `[待实现]` 实现短按启停和长按急停。
+- `[待实现]` 实现启动、就绪、运行和故障 LED 状态机。
+- `[待实现]` 实现非阻塞蜂鸣器 pattern，并将启动提示音迁入统一机制。
+- `[待实现]` 扩展 UART4 监控：栈、堆、电池、IMU 和 PID 状态。
+
+## 后续里程碑
+
+- `M4`：四电机闭环、麦轮运动学、轮序/符号约定和速度回传。
+- `M5`：兼容原厂实现的 X-Protocol 与 ROS2 联调。
+- `M6`：IWDG、UART DMA + IDLE、电池保护和生产级 CPU/栈验证。
+
+## 已确认决策
+
+- 控制周期：10 ms（100 Hz）。
+- PID 输出范围：-4200 至 +4200。
+- 编码器分辨率：电机轴四倍频后 1024 计数，减速比 1:30，每轮 30720 计数。
+- 首个闭环验证对象：MA 电机。
+- M0-M3 不包含麦轮运动学和二进制 ROS 协议。

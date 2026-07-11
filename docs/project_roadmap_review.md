@@ -19,7 +19,7 @@
 | 状态 | 内容 |
 |---|---|
 | 已完成 | CubeMX 工程生成与 CMake 构建链、BSP 层（电机/编码器/UART/ADC/蜂鸣器/IMU）、五任务 FreeRTOS 框架、IMU 静止标定 + 6 状态 ESKF、安全钩子（栈溢出/malloc 失败→Coast） |
-| 进行中 | `task_plan.md` 三阶段（IMU 有效性 / 单电机 PID / HMI），当前完成度 0%，修订指令见 `plan_review_and_directives.md` |
+| 进行中 | M0 阻塞缺陷修复与 M1 IMU 板测准备；任务按“基线已具备 / 已实现待板测 / 尚未实现”分类，执行指令见 `plan_review_and_directives.md` v2 |
 | 完全未规划成任务 | 四轮闭环、麦轮运动学、里程计、X-Protocol 实现与联调、IWDG、低电压策略执行项、UART DMA 改造、栈/CPU 实测收敛 |
 
 ## 3. 总路线图（M0–M6）
