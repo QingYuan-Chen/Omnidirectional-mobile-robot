@@ -67,6 +67,13 @@ Task heartbeat status remains separate in `AppRuntimeSnapshot.critical_tasks_ali
 - The first speed-loop candidate is 1 kHz using a TIM6/TIM7-triggered task notification; the final sampling rate and closed-loop bandwidth require plant identification, delay/noise measurements and discrete robustness evidence.
 - A hardware-current-feedback decision is required before final architecture selection. If current sensing is added, current-loop timing and load-torque-observer options must be reevaluated.
 
+### M2 G0 Motor Identity (2026-07-15)
+
+- The purchased motor is the XTARK MC520P30_12V, 12 V, 1:30, 1024 PPR magnetic AB-encoder variant.
+- Vendor ratings are 360 ± 20 rpm no-load, 290 ± 20 rpm rated, 0.3 A rated current, 3.2 A stall current, 1.5 kg·cm rated torque, 4.5 kg·cm stall torque, 4.32 W rated power and approximately 150 g mass. The vendor also lists 4.45 mH inductance and 2.3 ± 0.5 Ω resistance.
+- The motor's 3.2 A nominal stall current exceeds the board's approximately 2.2 A AT8236 hardware-chopping threshold, so identification must explicitly detect the chopping region instead of assuming the catalog stall point is reachable.
+- The vendor's 1:30 quadrature example computes `1024 * 30 * 4 = 122880` wheel counts, while the firmware currently uses `1024 * 30 = 30720`. No firmware constant will change until an output-shaft full-turn count test resolves whether the vendor's 1024 PPR is pre- or post-quadrature for the delivered unit.
+
 ### GPIO Assignments
 - Button: PE1 (USER_Btn)
 - LED1: PB0, LED2: PB1

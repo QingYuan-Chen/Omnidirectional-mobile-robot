@@ -51,3 +51,10 @@
 - PI + feedforward is now the benchmark rather than the selected controller. LADRC and PI + DOB are peer candidates until they are compared with the same data, constraints, safety behavior and quantitative metrics.
 - The current H60 board has AT8236 hardware current chopping but no MCU-visible motor-current feedback. A pseudo current loop remains prohibited; adding real current feedback requires an explicit hardware decision.
 - No `.ioc` or firmware behavior was changed in this documentation-only step. The existing 10 ms `controlTask` remains an explicitly labeled placeholder until G0 and the G1 test-bench design review are complete.
+
+## 2026-07-15: M2 G0 motor identity confirmed
+
+- Confirmed the purchased motor as the XTARK MC520P30_12V, 12 V, 1:30, 1024 PPR magnetic-encoder variant and recorded the vendor-rated speed, current, torque, power, resistance and inductance data.
+- Identified that the 3.2 A catalog stall current is above the board's approximately 2.2 A AT8236 hardware current-chopping threshold; the chopping region remains a required board measurement.
+- Identified a factor-of-four encoder-definition conflict: the vendor's 1:30 quadrature example gives 122880 counts per wheel revolution, while the current firmware configuration gives 30720. The firmware constant remains unchanged until a full-turn count test resolves the delivered encoder semantics.
+- G0 remains open for encoder count/direction measurement, allowable temperature, battery/mechanical configuration and AT8236 decay/Brake/Coast/chopping characterization. No firmware or `.ioc` behavior changed in this step.
