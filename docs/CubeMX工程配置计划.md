@@ -1,5 +1,7 @@
 # R750-MEC 下位机 CubeMX 工程配置计划
 
+> 历史搭建文档：本文记录初期工程生成依据。当前控制架构、任务和频率决策以 `task_plan.md`、`plan_review_and_directives.md`、`FreeRTOS框架规划.md` 和 `m2_control_architecture_gate.md` 为准。
+
 ## 目标
 
 为 R750 金属麦克纳姆轮底盘创建一个新的 STM32 下位机工程。原厂 Keil 源码只作为参考，不直接改造。
@@ -126,9 +128,9 @@ D:\STM32CubeCLT_1.20.0\CMake\bin\cmake.exe --build --preset Debug
 | MC | PWM IN1/IN2 | TIM9_CH1 / TIM9_CH2 | PE5 / PE6 |
 | MD | PWM IN1/IN2 | TIM12_CH1 / TIM12_CH2 | PB14 / PB15 |
 
-建议:
+当前基线与候选:
 
-- PWM frequency: 20 kHz。
+- PWM frequency: 当前 20 kHz；这是 M2 决策门的起测值，不是最终冻结值。
 - PWM period: 沿用原厂 4200 计数，或用 CubeMX 计算等效 20 kHz period。
 - PWM mode: PWM Generation CHx。
 - 输出极性: High。
@@ -147,14 +149,14 @@ D:\STM32CubeCLT_1.20.0\CMake\bin\cmake.exe --build --preset Debug
 - Encoder Mode: TI1 and TI2。
 - Counter Period: 最大值。
 - Input filter: 先参考原厂滤波值 6，CubeMX 中按可选项配置。
-- 控制周期: 20 ms，先沿用原厂 50 Hz。
+- 控制周期: 历史 20 ms 建议已废止。当前软件占位为 10 ms；M2 以硬件定时器驱动的 1 kHz 作为首轮候选，最终由辨识和鲁棒性评测决定。
 
 ### ROS 串口
 
 | 接口 | 用途 | 引脚 | 波特率 |
 |---|---|---|---|
 | USART2 | ROS USB 通信串口 | PD5 TX / PD6 RX | 230400 |
-| UART4 | ROS TTL 通信串口，可选 | PC10 TX / PC11 RX | 230400 |
+| UART4 | 人类调试、辨识采集和临时调参 | PC10 TX / PC11 RX | 230400 |
 
 当前第一版优先启用 USART2。UART4 可保留配置但业务先不依赖。
 

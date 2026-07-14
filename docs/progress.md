@@ -41,6 +41,13 @@
 - A single I2C error, timestamp discontinuity, or rejected spike invalidates only the affected output. Three consecutive sensor/spike failures escalate to persistent sensor fault.
 - ESKF failure is classified separately and triggers reinitialization from the stationary calibration bias. `DATA_VALID` is restored only after eight timestamp-continuous samples with an initialized finite estimator.
 - Safety now uses recoverable IMU health to inhibit motion without permanently latching the robot. Repeated critical-task heartbeat loss remains latching.
-- M1.3 board acceptance is deferred to the M2 single-motor bring-up. M2 is confirmed as speed PI + feedforward with no pseudo current loop; a position outer-loop interface may be reserved.
+- M1.3 board acceptance is deferred to the M2 single-motor bring-up. At this point M2 was recorded as speed PI + feedforward with no pseudo current loop; the controller/frequency selection was explicitly reopened and superseded by the 2026-07-14 M2 decision gate below.
 - Debug and Release clean builds passed 57/57, followed by successful incremental rebuilds after the final state-severity correction. RAM: 40,928 B; Flash: 67,552/40,116 B.
 - `app_imu.c`, `app_tasks.c`, and `imu_eskf.c` passed `-Wall -Wextra -Wshadow -Wconversion -Werror` syntax checking and GCC `-fanalyzer`.
+
+## 2026-07-14: M2 control architecture decision reopened
+- Reclassified the reference firmware's 100 Hz control task and the current 20 kHz PWM as implementation baselines rather than final design decisions. SYSCLK remains 168 MHz, while PWM, optional current-loop, speed-loop and chassis-loop timing are managed as separate domains.
+- Added `m2_control_architecture_gate.md` with G0-G7 gates covering motor/hardware confirmation, deterministic TIM6/TIM7-triggered timing, open-loop identification, M/T speed estimation, current-feedback hardware review, unified candidate controllers, board comparison and a final architecture decision record.
+- PI + feedforward is now the benchmark rather than the selected controller. LADRC and PI + DOB are peer candidates until they are compared with the same data, constraints, safety behavior and quantitative metrics.
+- The current H60 board has AT8236 hardware current chopping but no MCU-visible motor-current feedback. A pseudo current loop remains prohibited; adding real current feedback requires an explicit hardware decision.
+- No `.ioc` or firmware behavior was changed in this documentation-only step. The existing 10 ms `controlTask` remains an explicitly labeled placeholder until G0 and the G1 test-bench design review are complete.

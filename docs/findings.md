@@ -12,7 +12,7 @@
 ### Task Layout
 | Task | Priority | Period | Stack |
 |------|----------|--------|-------|
-| controlTask | High | 10ms | 1536B |
+| controlTask | High | 10ms（当前占位） | 1536B |
 | safetyTask | High | 100ms | 1024B |
 | commTask | AboveNormal | 5ms | 1536B |
 | imuTask | AboveNormal | DRDY/10ms | 1536B |
@@ -22,6 +22,7 @@
 - SENSOR_PRESENT, CALIBRATED, DATA_VALID, FILTER_INITIALIZED
 - FILTER_CONVERGED, ACCEL_UPDATE_USED, VIBRATION_HIGH
 - SENSOR_FAULT, DATA_STALE, ABSOLUTE_YAW_VALID, TIMESTAMP_VALID, TILT_VALID
+- SAMPLE_SPIKE, SENSOR_DEGRADED, RECOVERING, ESTIMATOR_FAULT
 
 ### IMU Data and Flag Semantics
 
@@ -44,7 +45,7 @@
 | `TILT_VALID` | Roll/pitch are observable and valid | Required when consuming tilt |
 | `ABSOLUTE_YAW_VALID` | Absolute heading is observable | Always false for the current six-axis IMU-only estimator |
 
-The M1 implementation will add explicitly named filtered acceleration/angular-rate fields for control and telemetry. They will not replace `raw_sample` or the ESKF input path.
+The M1 implementation added explicitly named filtered acceleration/angular-rate fields for control and telemetry. They do not replace `raw_sample` or the ESKF input path.
 
 ### M1 Fault and Recovery Semantics
 
@@ -58,11 +59,13 @@ The M1 implementation will add explicitly named filtered acceleration/angular-ra
 
 Task heartbeat status remains separate in `AppRuntimeSnapshot.critical_tasks_alive`. Only repeated task-heartbeat loss is permanently latched at this stage; IMU degradation drives `motion_inhibited` while retry and recovery continue.
 
-### M2 Motor-Control Boundary
+### M2 Motor-Control Decision Status
 
-- The present hardware has no motor-current ADC feedback, so M2 will not create a pseudo current loop.
-- The executable baseline is a 100 Hz wheel-speed PI controller with feedforward, conditional integration, ramping, and saturation. A position outer-loop target interface may be reserved without implementing position control in M2.
-- LQR/MPC are deferred from the per-motor M2 loop. They can be reconsidered at the chassis/body-motion layer after four-wheel identification, timing, saturation, and odometry are validated.
+- The present hardware has no MCU-visible motor-current feedback. The AT8236 `ISEN` shunt and fixed `VREF` provide hardware current chopping but are not routed to the STM32 ADC, so M2 must not create a pseudo current loop.
+- SYSCLK is currently 168 MHz, PWM is approximately 20 kHz, and `controlTask` is currently 100 Hz. Only SYSCLK is retained as the planned MCU operating point; PWM and control rates remain experimental candidates.
+- PI + feedforward is the benchmark controller, not the selected final controller. LADRC and PI + DOB are peer candidates under `m2_control_architecture_gate.md`.
+- The first speed-loop candidate is 1 kHz using a TIM6/TIM7-triggered task notification; the final sampling rate and closed-loop bandwidth require plant identification, delay/noise measurements and discrete robustness evidence.
+- A hardware-current-feedback decision is required before final architecture selection. If current sensing is added, current-loop timing and load-torque-observer options must be reevaluated.
 
 ### GPIO Assignments
 - Button: PE1 (USER_Btn)
