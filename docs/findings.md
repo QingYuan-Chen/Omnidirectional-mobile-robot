@@ -1,90 +1,90 @@
-# Findings
+# 项目发现与结论
 
-## Codebase Baseline (2026-07-11)
+## 代码库基线（2026-07-11）
 
-### FreeRTOS Config
+### FreeRTOS 配置
 - `configUSE_PREEMPTION=1`, `configTICK_RATE_HZ=1000`
-- `configENABLE_FPU=0` is not used by the selected GCC ARM_CM4F FreeRTOS port. The toolchain uses `-mfpu=fpv4-sp-d16 -mfloat-abi=hard`; `port.c` enables VFP and lazy floating-point context preservation. This item is verified and closed.
+- 当前选用的 GCC ARM_CM4F FreeRTOS 移植层不使用 `configENABLE_FPU=0`。工具链参数为 `-mfpu=fpv4-sp-d16 -mfloat-abi=hard`；`port.c` 已启用 VFP 和浮点上下文惰性保存。该项已验证关闭。
 - `configCHECK_FOR_STACK_OVERFLOW=2`
-- `configMAX_PRIORITIES=56`, heap=32KB
-- CMSIS-RTOS v2 wrapper active
+- `configMAX_PRIORITIES=56`，堆大小为 32 KB
+- 已启用 CMSIS-RTOS v2 封装层
 
-### Task Layout
-| Task | Priority | Period | Stack |
+### 任务布局
+| 任务 | 优先级 | 周期 | 栈大小 |
 |------|----------|--------|-------|
-| controlTask | High | 10ms（当前占位） | 1536B |
-| safetyTask | High | 100ms | 1024B |
-| commTask | AboveNormal | 5ms | 1536B |
-| imuTask | AboveNormal | DRDY/10ms | 1536B |
-| monitorTask | Low | 500ms | 1024B |
+| `controlTask` | 高 | 10 ms（当前占位） | 1536 B |
+| `safetyTask` | 高 | 100 ms | 1024 B |
+| `commTask` | 较高 | 5 ms | 1536 B |
+| `imuTask` | 较高 | DRDY/10 ms | 1536 B |
+| `monitorTask` | 低 | 500 ms | 1024 B |
 
-### Current AppImuOutput Flags
-- SENSOR_PRESENT, CALIBRATED, DATA_VALID, FILTER_INITIALIZED
-- FILTER_CONVERGED, ACCEL_UPDATE_USED, VIBRATION_HIGH
-- SENSOR_FAULT, DATA_STALE, ABSOLUTE_YAW_VALID, TIMESTAMP_VALID, TILT_VALID
-- SAMPLE_SPIKE, SENSOR_DEGRADED, RECOVERING, ESTIMATOR_FAULT
+### 当前 `AppImuOutput` 标志
+- `SENSOR_PRESENT`、`CALIBRATED`、`DATA_VALID`、`FILTER_INITIALIZED`
+- `FILTER_CONVERGED`、`ACCEL_UPDATE_USED`、`VIBRATION_HIGH`
+- `SENSOR_FAULT`、`DATA_STALE`、`ABSOLUTE_YAW_VALID`、`TIMESTAMP_VALID`、`TILT_VALID`
+- `SAMPLE_SPIKE`、`SENSOR_DEGRADED`、`RECOVERING`、`ESTIMATOR_FAULT`
 
-### IMU Data and Flag Semantics
+### IMU 数据与标志语义
 
-| Field / flag | Meaning | Control-path use |
+| 字段/标志 | 含义 | 控制链用途 |
 |---|---|---|
-| `raw_sample` | Unmodified synchronized QMI8658A register values | No; diagnostics/telemetry only |
-| `acceleration_mps2` | Current body-frame SI acceleration used by the estimator | Only while processed validity requirements hold |
-| `angular_rate_rad_s` | Current body-frame angular rate with estimated gyro bias removed | Only while processed validity requirements hold |
-| `quaternion`, `euler_rad` | ESKF attitude output | Requires `DATA_VALID`, `FILTER_INITIALIZED`, `TIMESTAMP_VALID`, and the relevant attitude-valid flag |
-| `SENSOR_PRESENT` | The sensor was detected and initialized | Diagnostic prerequisite, not sufficient validity |
-| `CALIBRATED` | Startup stationary calibration completed | Required for processed output |
-| `DATA_VALID` | Current processed sample and estimator state are consumable | Required by control/safety consumers |
-| `FILTER_INITIALIZED` | ESKF nominal/error state was initialized | Required for attitude output |
-| `FILTER_CONVERGED` | Minimum accepted gravity updates reached | Readiness/diagnostic gate |
-| `ACCEL_UPDATE_USED` | This sample's acceleration passed gravity-observation gates | Diagnostic; a single rejection is not a sensor fault |
-| `VIBRATION_HIGH` | Acceleration norm suggests elevated vibration/dynamic motion | Diagnostic/degradation input |
-| `SENSOR_FAULT` | Persistent sensor access/data failure under the current policy | Processed data must not be consumed |
-| `DATA_STALE` | No sufficiently recent good sample | Processed data must not be consumed |
-| `TIMESTAMP_VALID` | Sensor time progression is acceptable | Required by processed consumers |
-| `TILT_VALID` | Roll/pitch are observable and valid | Required when consuming tilt |
-| `ABSOLUTE_YAW_VALID` | Absolute heading is observable | Always false for the current six-axis IMU-only estimator |
+| `raw_sample` | 未修改的 QMI8658A 同步寄存器原始值 | 不进入控制，仅用于诊断和遥测 |
+| `acceleration_mps2` | 估计器使用的当前机体系 SI 加速度 | 仅在处理后有效性条件满足时使用 |
+| `angular_rate_rad_s` | 已扣除估计陀螺零偏的当前机体系角速度 | 仅在处理后有效性条件满足时使用 |
+| `quaternion`、`euler_rad` | ESKF 姿态输出 | 需要 `DATA_VALID`、`FILTER_INITIALIZED`、`TIMESTAMP_VALID` 及对应姿态有效标志 |
+| `SENSOR_PRESENT` | 传感器已检测并初始化 | 仅是诊断前提，不代表数据有效 |
+| `CALIBRATED` | 启动静止标定已完成 | 处理后输出的必要条件 |
+| `DATA_VALID` | 当前处理样本及估计器状态可用 | 控制和安全消费者的必要条件 |
+| `FILTER_INITIALIZED` | ESKF 名义状态和误差状态已初始化 | 姿态输出的必要条件 |
+| `FILTER_CONVERGED` | 已达到最低有效重力更新次数 | 就绪和诊断门槛 |
+| `ACCEL_UPDATE_USED` | 当前加速度样本通过重力观测门控 | 用于诊断；单次拒绝不构成传感器故障 |
+| `VIBRATION_HIGH` | 加速度模长表明振动或动态运动较强 | 诊断和降级输入 |
+| `SENSOR_FAULT` | 当前策略下出现持久的传感器访问或数据故障 | 禁止消费处理后数据 |
+| `DATA_STALE` | 没有足够新的有效样本 | 禁止消费处理后数据 |
+| `TIMESTAMP_VALID` | 传感器时间推进正常 | 处理后消费者的必要条件 |
+| `TILT_VALID` | 横滚角和俯仰角可观且有效 | 使用倾角时的必要条件 |
+| `ABSOLUTE_YAW_VALID` | 绝对航向可观 | 当前仅使用六轴 IMU 的估计器中始终为假 |
 
-The M1 implementation added explicitly named filtered acceleration/angular-rate fields for control and telemetry. They do not replace `raw_sample` or the ESKF input path.
+M1 已增加名称明确的滤波加速度和滤波角速度字段，供控制与遥测使用；这些字段不会替代 `raw_sample`，也不会进入 ESKF 输入链路。
 
-### M1 Fault and Recovery Semantics
+### M1 故障与恢复语义
 
-| State | Meaning | Safety behavior |
+| 状态 | 含义 | 安全行为 |
 |---|---|---|
-| `HEALTHY` | Current sample and finite initialized estimator passed the processed-data gates | Processed IMU output may be consumed |
-| `TRANSIENT_DEGRADED` | A single sensor access, timestamp, or spike failure affected the current sample | Inhibit motion without permanent latching |
-| `PERSISTENT_SENSOR_FAULT` | Consecutive sensor/spike failures reached the configured threshold | Keep motion inhibited and continue retry/heartbeat |
-| `ESTIMATOR_FAULT` | ESKF update produced an invalid internal state; reinitialization is attempted from calibration bias | Keep motion inhibited; require stable recovery samples |
-| `RECOVERING` | Sensor reads and estimator updates have resumed, but the stable-sample threshold is not complete | Keep `DATA_VALID` clear until recovery completes |
+| `HEALTHY` | 当前样本和已初始化的有限估计器通过处理后数据门控 | 允许使用处理后的 IMU 输出 |
+| `TRANSIENT_DEGRADED` | 单次传感器访问、时间戳或突变错误影响当前样本 | 禁止运动，但不永久锁存 |
+| `PERSISTENT_SENSOR_FAULT` | 连续传感器或突变失败达到配置门槛 | 保持运动禁止，同时继续重试和上报心跳 |
+| `ESTIMATOR_FAULT` | ESKF 更新产生无效内部状态，并尝试从标定零偏重新初始化 | 保持运动禁止，并要求连续稳定恢复样本 |
+| `RECOVERING` | 传感器读取和估计器更新已经恢复，但尚未满足稳定样本门槛 | 恢复完成前保持 `DATA_VALID` 清零 |
 
-Task heartbeat status remains separate in `AppRuntimeSnapshot.critical_tasks_alive`. Only repeated task-heartbeat loss is permanently latched at this stage; IMU degradation drives `motion_inhibited` while retry and recovery continue.
+任务心跳状态通过 `AppRuntimeSnapshot.critical_tasks_alive` 独立发布。当前只有重复的关键任务心跳丢失会永久锁存；IMU 降级仅设置 `motion_inhibited`，同时保持重试和恢复。
 
-### M2 Motor-Control Decision Status
+### M2 电机控制决策状态
 
-- The present hardware has no MCU-visible motor-current feedback. The AT8236 `ISEN` shunt and fixed `VREF` provide hardware current chopping but are not routed to the STM32 ADC, so M2 must not create a pseudo current loop.
-- SYSCLK is currently 168 MHz, PWM is approximately 20 kHz, and `controlTask` is currently 100 Hz. Only SYSCLK is retained as the planned MCU operating point; PWM and control rates remain experimental candidates.
-- PI + feedforward is the benchmark controller, not the selected final controller. LADRC and PI + DOB are peer candidates under `m2_control_architecture_gate.md`.
-- The first speed-loop candidate is 1 kHz using a TIM6/TIM7-triggered task notification; the final sampling rate and closed-loop bandwidth require plant identification, delay/noise measurements and discrete robustness evidence.
-- A hardware-current-feedback decision is required before final architecture selection. If current sensing is added, current-loop timing and load-torque-observer options must be reevaluated.
+- 当前硬件没有 MCU 可见的电机电流反馈。AT8236 的 `ISEN` 分流电阻和固定 `VREF` 只提供硬件电流斩波，未连接到 STM32 ADC，因此 M2 禁止建立伪电流环。
+- 当前 SYSCLK 为 168 MHz、PWM 约为 20 kHz、`controlTask` 为 100 Hz。仅保留 168 MHz 作为 MCU 计划运行点，PWM 和控制频率仍是实验候选值。
+- PI + 前馈是基准控制器，不是最终选定控制器。LADRC 和 PI + DOB 是 `m2_control_architecture_gate.md` 定义的同级候选方案。
+- 首轮速度环候选为 1 kHz，使用 TIM6/TIM7 触发任务通知；最终采样率和闭环带宽需要系统辨识、延迟/噪声测量及离散鲁棒性证据。
+- 正式确定控制架构前必须完成电流反馈硬件决策。如果增加电流采样，需要重新评审电流环时序和负载转矩观测方案。
 
-### M2 G0 Motor Identity (2026-07-15)
+### M2 G0 电机身份（2026-07-15）
 
-- The purchased motor is the XTARK MC520P30_12V, 12 V, 1:30, 1024 PPR magnetic AB-encoder variant.
-- Vendor ratings are 360 ± 20 rpm no-load, 290 ± 20 rpm rated, 0.3 A rated current, 3.2 A stall current, 1.5 kg·cm rated torque, 4.5 kg·cm stall torque, 4.32 W rated power and approximately 150 g mass. The vendor also lists 4.45 mH inductance and 2.3 ± 0.5 Ω resistance.
-- The motor's 3.2 A nominal stall current exceeds the board's approximately 2.2 A AT8236 hardware-chopping threshold, so identification must explicitly detect the chopping region instead of assuming the catalog stall point is reachable.
-- The vendor's 1:30 quadrature example computes `1024 * 30 * 4 = 122880` wheel counts, while the firmware currently uses `1024 * 30 = 30720`. No firmware constant will change until an output-shaft full-turn count test resolves whether the vendor's 1024 PPR is pre- or post-quadrature for the delivered unit.
+- 已购电机为塔克 MC520P30_12V，12 V、1:30、1024 PPR 磁编码器 AB 相版本。
+- 原厂参数为：空载转速 360 ± 20 rpm、额定转速 290 ± 20 rpm、额定电流 0.3 A、堵转电流 3.2 A、额定转矩 1.5 kg·cm、堵转转矩 4.5 kg·cm、额定功率 4.32 W、质量约 150 g；同时给出电感 4.45 mH、电阻 2.3 ± 0.5 Ω。
+- 电机标称堵转电流 3.2 A，高于控制板约 2.2 A 的 AT8236 硬件斩波阈值。辨识时必须显式检测斩波介入区域，不能假设能够达到目录堵转点。
+- 原厂 1:30 四倍频示例为 `1024 * 30 * 4 = 122880` 轮端计数，当前固件使用 `1024 * 30 = 30720`。在输出轴整圈计数实测确认交付编码器的 1024 PPR 是四倍频前还是四倍频后之前，不修改固件常量。
 
-### GPIO Assignments
-- Button: PE1 (USER_Btn)
-- LED1: PB0, LED2: PB1
-- Buzzer: PE0
-- UART4: PC10 TX / PC11 RX (230400 baud)
+### GPIO 分配
+- 按键：PE1（`USER_Btn`）
+- LED1：PB0，LED2：PB1
+- 蜂鸣器：PE0
+- UART4：PC10 TX / PC11 RX（230400 baud）
 
-### PWM Channels
+### PWM 通道
 - MA: TIM1_CH1/CH2 (PE9/PE11)
 - MB: TIM1_CH3/CH4 (PE13/PE14)
 - MC: TIM9_CH1/CH2 (PE5/PE6)
 - MD: TIM12_CH1/CH2 (PB14/PB15)
 
-### Encoder Timers
+### 编码器定时器
 - MA: TIM2, MB: TIM3, MC: TIM5, MD: TIM4

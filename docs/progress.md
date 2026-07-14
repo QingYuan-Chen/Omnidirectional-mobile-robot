@@ -1,60 +1,66 @@
-# Progress Log
+# 项目进度记录
 
-## 2026-07-11: Planning session started
-- User specified 3-phase implementation plan
-- Created task_plan.md, findings.md
-- Baseline code reviewed
+## 2026-07-11：启动规划
+- 用户确定三阶段实施计划。
+- 创建 `task_plan.md` 和 `findings.md`。
+- 完成基线代码审查。
 
-## 2026-07-11: M0 repository baseline
-- Initialized the repository on branch `main` and configured `origin` for `QingYuan-Chen/Omnidirectional-mobile-robot`.
-- Added `.gitignore`; excluded build output, IDE state, CubeMX temporary files, local reference material, and the vendor source copy.
-- Created and pushed baseline commit `51c2ed5` (`chore: establish STM32 firmware baseline`).
-- Reclassified the task plan into baseline, board-validation, and TODO states; consolidated the approved execution directives into v2.
+## 2026-07-11：M0 仓库基线
+- 在 `main` 分支初始化仓库，并为 `QingYuan-Chen/Omnidirectional-mobile-robot` 配置远端 `origin`。
+- 添加 `.gitignore`，排除构建输出、IDE 状态、CubeMX 临时文件、本地参考资料和厂家源码副本。
+- 创建并推送基线提交 `51c2ed5`（`chore: establish STM32 firmware baseline`）。
+- 将任务计划重新划分为基线、待板测和待实现状态，并把已批准的执行指令整合为 v2。
 
-## 2026-07-11: M0 UART receive recovery
-- Verified the STM32F4 HAL interrupt ordering before changing the callback flow: the HAL normally follows an errored receive-complete callback with `HAL_UART_ErrorCallback`, but the BSP no longer relies on that implicit ordering as its only recovery path.
-- An errored receive-complete callback now marks recovery pending. The error callback records/clears errors and attempts one restart only when `RxState` is Ready; `BspUart_Service()` provides the task-context fallback.
-- Added UART recovery attempt/success counters while retaining restart-failure and hardware error counters.
-- CubeMX CLI regeneration completed without overwriting the BSP change. CubeMX emitted unrelated local third-party pack warnings.
-- `cmake --build --preset Debug --clean-first`: passed 57/57; RAM 40,768 B, Flash 65,776 B.
-- `cmake --build --preset Release --clean-first`: passed 57/57; RAM 40,760 B, Flash 39,276 B.
-- `bsp_uart.c` passed `-Wall -Wextra -Wshadow -Wconversion -Werror` syntax checking and GCC `-fanalyzer`.
-- Hardware fault injection has not yet been performed; UART parity/framing/noise/overrun recovery remains a board-validation item.
+## 2026-07-11：M0 UART 接收恢复
+- 修改回调流程前先验证 STM32F4 HAL 中断顺序：发生错误的接收完成回调之后，HAL 通常还会调用 `HAL_UART_ErrorCallback`；BSP 不再把这一隐式顺序作为唯一恢复路径。
+- 发生错误的接收完成回调现在会设置待恢复标志。错误回调负责记录和清除错误，并仅在 `RxState` 为 Ready 时尝试一次重启；`BspUart_Service()` 提供任务上下文兜底恢复。
+- 增加 UART 恢复尝试和成功计数，同时保留重启失败及硬件错误计数。
+- CubeMX 命令行重新生成成功，没有覆盖 BSP 修改；CubeMX 仅输出了无关的本地第三方软件包警告。
+- `cmake --build --preset Debug --clean-first`：57/57 通过；RAM 40,768 B，Flash 65,776 B。
+- `cmake --build --preset Release --clean-first`：57/57 通过；RAM 40,760 B，Flash 39,276 B。
+- `bsp_uart.c` 通过 `-Wall -Wextra -Wshadow -Wconversion -Werror` 语法检查和 GCC `-fanalyzer` 静态分析。
+- 尚未执行硬件故障注入；UART 奇偶校验、帧、噪声和溢出错误恢复仍为待板测项。
 
-## 2026-07-11: M1 IMU data-quality outputs
-- Added independent first-order filtered acceleration and angular-rate fields for control/telemetry. The ESKF continues to consume the validity-gated, unfiltered SI sample.
-- Added producer-owned `sample_age_ms`, configurable vector-delta spike rejection, and spike diagnostic counters.
-- Replaced the `UINT32_MAX` timestamp-jump sentinel with the real saturating dropped-sample total. A single timestamp jump now invalidates only the affected sample.
-- Preliminary filter cutoff and spike thresholds remain board-tuning items; M1.3 hardware acceptance is deferred to the M2 single-motor bring-up stage.
-- Debug and Release builds passed. RAM: 40,864/40,856 B; Flash: 66,660/39,696 B.
-- `app_imu.c` passed `-Wall -Wextra -Wshadow -Wconversion -Werror` syntax checking and GCC `-fanalyzer`.
+## 2026-07-11：M1 IMU 数据质量输出
+- 增加相互独立的一阶滤波加速度和角速度字段，供控制与遥测使用；ESKF 继续使用经过有效性门控但未经普通低通的 SI 样本。
+- 增加由生产者维护的 `sample_age_ms`、可配置向量差突变拒绝和突变诊断计数。
+- 使用真实饱和丢样总数替代 `UINT32_MAX` 时间戳跳变哨兵；单次时间戳跳变只会使受影响样本失效。
+- 初始滤波截止频率和突变阈值仍需板上调试；M1.3 硬件验收延期至 M2 单电机调试阶段。
+- Debug 和 Release 构建通过。RAM：40,864/40,856 B；Flash：66,660/39,696 B。
+- `app_imu.c` 通过 `-Wall -Wextra -Wshadow -Wconversion -Werror` 语法检查和 GCC `-fanalyzer` 静态分析。
 
-## 2026-07-11: M1 IMU non-blocking retry backoff
-- Replaced the IMU task's fixed blocking delay with an application-owned `20/50/100/200/500 ms` retry schedule, capped at 500 ms and reset by the first successful sensor read.
-- During backoff, `AppImu_Process()` skips I2C access but the IMU task still wakes at its normal bounded interval, publishes the current age/stale state, and sets its heartbeat every pass.
-- Added observable backoff count, current delay, and next-retry tick fields to `AppImuOutput`.
-- Debug and Release builds passed. RAM: 40,888 B; Flash: 66,900/39,764 B.
-- `app_imu.c` and `app_tasks.c` passed `-Wall -Wextra -Wshadow -Wconversion -Werror` syntax checking and GCC `-fanalyzer`.
+## 2026-07-11：M1 IMU 非阻塞重试退避
+- 将 IMU 任务的固定阻塞延时替换为应用层维护的 `20/50/100/200/500 ms` 重试序列，最大 500 ms；首次成功读取后复位。
+- 退避期间，`AppImu_Process()` 跳过 I2C 访问，但 IMU 任务仍按正常有限周期唤醒，发布当前数据年龄和陈旧状态，并在每次执行时上报心跳。
+- 在 `AppImuOutput` 中增加可观测的退避次数、当前延时和下一次重试时刻字段。
+- Debug 和 Release 构建通过。RAM：40,888 B；Flash：66,900/39,764 B。
+- `app_imu.c` 和 `app_tasks.c` 通过 `-Wall -Wextra -Wshadow -Wconversion -Werror` 语法检查和 GCC `-fanalyzer` 静态分析。
 
-## 2026-07-11: M1 IMU fault classification and stable recovery
-- Added explicit healthy, transient-degraded, persistent-sensor-fault, recovering, and estimator-fault states. Critical-task heartbeat status is published separately from IMU health.
-- A single I2C error, timestamp discontinuity, or rejected spike invalidates only the affected output. Three consecutive sensor/spike failures escalate to persistent sensor fault.
-- ESKF failure is classified separately and triggers reinitialization from the stationary calibration bias. `DATA_VALID` is restored only after eight timestamp-continuous samples with an initialized finite estimator.
-- Safety now uses recoverable IMU health to inhibit motion without permanently latching the robot. Repeated critical-task heartbeat loss remains latching.
-- M1.3 board acceptance is deferred to the M2 single-motor bring-up. At this point M2 was recorded as speed PI + feedforward with no pseudo current loop; the controller/frequency selection was explicitly reopened and superseded by the 2026-07-14 M2 decision gate below.
-- Debug and Release clean builds passed 57/57, followed by successful incremental rebuilds after the final state-severity correction. RAM: 40,928 B; Flash: 67,552/40,116 B.
-- `app_imu.c`, `app_tasks.c`, and `imu_eskf.c` passed `-Wall -Wextra -Wshadow -Wconversion -Werror` syntax checking and GCC `-fanalyzer`.
+## 2026-07-11：M1 IMU 故障分级与稳定恢复
+- 增加健康、瞬时降级、持久传感器故障、恢复中和估计器故障状态；关键任务心跳状态与 IMU 健康状态分开发布。
+- 单次 I2C 错误、时间戳不连续或突变拒绝只会使受影响输出失效；连续三次传感器或突变失败才升级为持久传感器故障。
+- ESKF 故障单独分级，并触发使用静止标定零偏重新初始化。只有连续八个时间戳连续的样本通过，且估计器已初始化并保持有限，才恢复 `DATA_VALID`。
+- 安全逻辑现在使用可恢复的 IMU 健康状态禁止运动，不永久锁存机器人；重复的关键任务心跳丢失仍会锁存。
+- M1.3 板上验收延期至 M2 单电机调试。当时曾把 M2 记录为速度 PI + 前馈且不使用伪电流环；控制器和频率选择已在 2026-07-14 的 M2 决策门中重新开放并取代该旧结论。
+- Debug 和 Release 完整构建 57/57 通过，最终状态严重度修正后的增量构建也通过。RAM：40,928 B；Flash：67,552/40,116 B。
+- `app_imu.c`、`app_tasks.c` 和 `imu_eskf.c` 通过 `-Wall -Wextra -Wshadow -Wconversion -Werror` 语法检查和 GCC `-fanalyzer` 静态分析。
 
-## 2026-07-14: M2 control architecture decision reopened
-- Reclassified the reference firmware's 100 Hz control task and the current 20 kHz PWM as implementation baselines rather than final design decisions. SYSCLK remains 168 MHz, while PWM, optional current-loop, speed-loop and chassis-loop timing are managed as separate domains.
-- Added `m2_control_architecture_gate.md` with G0-G7 gates covering motor/hardware confirmation, deterministic TIM6/TIM7-triggered timing, open-loop identification, M/T speed estimation, current-feedback hardware review, unified candidate controllers, board comparison and a final architecture decision record.
-- PI + feedforward is now the benchmark rather than the selected controller. LADRC and PI + DOB are peer candidates until they are compared with the same data, constraints, safety behavior and quantitative metrics.
-- The current H60 board has AT8236 hardware current chopping but no MCU-visible motor-current feedback. A pseudo current loop remains prohibited; adding real current feedback requires an explicit hardware decision.
-- No `.ioc` or firmware behavior was changed in this documentation-only step. The existing 10 ms `controlTask` remains an explicitly labeled placeholder until G0 and the G1 test-bench design review are complete.
+## 2026-07-14：重新开放 M2 控制架构决策
+- 将参考固件的 100 Hz 控制任务和当前 20 kHz PWM 重新定义为实现基线，而非最终设计结论。SYSCLK 保持 168 MHz，PWM、可选电流环、速度环和底盘环分别管理。
+- 增加 `m2_control_architecture_gate.md`，以 G0-G7 覆盖电机/硬件确认、TIM6/TIM7 确定性时基、开环辨识、M/T 测速、电流反馈硬件评审、统一候选控制器、板上对比和最终架构决策记录。
+- PI + 前馈改为基准控制器，不再视为已选方案。LADRC 和 PI + DOB 是同级候选，必须使用相同数据、约束、安全行为和量化指标进行比较。
+- 当前 H60 控制板具备 AT8236 硬件电流斩波，但没有 MCU 可见的电机电流反馈。继续禁止伪电流环；增加真实电流反馈必须经过明确的硬件决策。
+- 本步骤只修改文档，没有改变 `.ioc` 或固件行为。现有 10 ms `controlTask` 仍是明确标注的占位实现，直到 G0 和 G1 试验台设计评审完成。
 
-## 2026-07-15: M2 G0 motor identity confirmed
+## 2026-07-15：确认 M2 G0 电机身份
 
-- Confirmed the purchased motor as the XTARK MC520P30_12V, 12 V, 1:30, 1024 PPR magnetic-encoder variant and recorded the vendor-rated speed, current, torque, power, resistance and inductance data.
-- Identified that the 3.2 A catalog stall current is above the board's approximately 2.2 A AT8236 hardware current-chopping threshold; the chopping region remains a required board measurement.
-- Identified a factor-of-four encoder-definition conflict: the vendor's 1:30 quadrature example gives 122880 counts per wheel revolution, while the current firmware configuration gives 30720. The firmware constant remains unchanged until a full-turn count test resolves the delivered encoder semantics.
-- G0 remains open for encoder count/direction measurement, allowable temperature, battery/mechanical configuration and AT8236 decay/Brake/Coast/chopping characterization. No firmware or `.ioc` behavior changed in this step.
+- 确认已购电机为塔克 MC520P30_12V，12 V、1:30、1024 PPR 磁编码器版本，并记录原厂转速、电流、转矩、功率、电阻和电感参数。
+- 发现目录堵转电流 3.2 A 高于控制板约 2.2 A 的 AT8236 硬件斩波阈值；斩波介入区域仍为必测项。
+- 发现编码器定义存在四倍冲突：原厂 1:30 四倍频示例为每轮 122880 计数，当前固件配置为 30720。在输出轴整圈计数实测关闭该问题前，不修改固件常量。
+- G0 仍需确认编码器计数/方向、允许温度、电池/机械配置和 AT8236 衰减、Brake、Coast 及斩波特性。本步骤没有改变固件或 `.ioc` 行为。
+
+## 2026-07-15：统一项目文档语言
+
+- 将 `findings.md` 和 `progress.md` 中原有的英文标题、说明、表头及状态语义改为中文，保留代码标识、型号、工具参数和必要技术缩写。
+- 在 `plan_review_and_directives.md` 中增加文档语言规范；后续规划、流程、决策、进度和结论文档统一使用中文。
+- 本步骤只修改文档，不改变固件或 `.ioc` 行为。

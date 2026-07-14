@@ -93,13 +93,13 @@ D:\STM32CubeCLT_1.20.0\CMake\bin\cmake.exe --build --preset Debug
 
 ## CubeMX 基础设置
 
-- MCU selector: `STM32F407VETx`。
-- Package: LQFP100。
-- Project Manager:
-  - Toolchain/IDE: 优先选择 CMake；若 CubeMX 版本不支持 CMake，则选择 Makefile 后由 CubeCLT/CMake 适配。
-  - Generate peripheral initialization as pair of `.c/.h` files per peripheral: Enable。
-  - Keep User Code when re-generating: Enable。
-- Middleware:
+- MCU 选择器：`STM32F407VETx`。
+- 芯片封装：LQFP100。
+- 项目管理：
+  - 工具链/IDE：优先选择 CMake；若 CubeMX 版本不支持 CMake，则选择 Makefile 后由 CubeCLT/CMake 适配。
+  - 每个外设分别生成一对 `.c/.h` 初始化文件：启用。
+  - 重新生成时保留用户代码：启用。
+- 中间件：
   - FreeRTOS: CMSIS-V1 或 Native FreeRTOS 均可。建议 Native FreeRTOS，业务层更直接。
 
 ## 时钟树
@@ -108,11 +108,11 @@ D:\STM32CubeCLT_1.20.0\CMake\bin\cmake.exe --build --preset Debug
 
 目标运行频率:
 
-- SYSCLK: 168 MHz。
-- HCLK: 168 MHz。
-- APB1: 42 MHz。
-- APB2: 84 MHz。
-- FreeRTOS tick: 1 kHz。
+- SYSCLK：168 MHz。
+- HCLK：168 MHz。
+- APB1：42 MHz。
+- APB2：84 MHz。
+- FreeRTOS 系统节拍：1 kHz。
 
 ## 外设配置
 
@@ -129,10 +129,10 @@ D:\STM32CubeCLT_1.20.0\CMake\bin\cmake.exe --build --preset Debug
 
 当前基线与候选:
 
-- PWM frequency: 当前 20 kHz；这是 M2 决策门的起测值，不是最终冻结值。
-- PWM period: 沿用原厂 4200 计数，或用 CubeMX 计算等效 20 kHz period。
-- PWM mode: PWM Generation CHx。
-- 输出极性: High。
+- PWM 频率：当前 20 kHz；这是 M2 决策门的起测值，不是最终冻结值。
+- PWM 周期：沿用原厂 4200 计数，或用 CubeMX 计算等效 20 kHz 周期。
+- PWM 模式：PWM Generation CHx。
+- 输出极性：高电平有效。
 
 ### 编码器
 
@@ -145,10 +145,10 @@ D:\STM32CubeCLT_1.20.0\CMake\bin\cmake.exe --build --preset Debug
 
 建议:
 
-- Encoder Mode: TI1 and TI2。
-- Counter Period: 最大值。
-- Input filter: 先参考原厂滤波值 6，CubeMX 中按可选项配置。
-- 控制周期: 历史 20 ms 建议已废止。当前软件占位为 10 ms；M2 以硬件定时器驱动的 1 kHz 作为首轮候选，最终由辨识和鲁棒性评测决定。
+- 编码器模式：TI1 和 TI2。
+- 计数器周期：最大值。
+- 输入滤波：先参考原厂滤波值 6，在 CubeMX 中按可选项配置。
+- 控制周期：历史 20 ms 建议已废止。当前软件占位为 10 ms；M2 以硬件定时器驱动的 1 kHz 作为首轮候选，最终由辨识和鲁棒性评测决定。
 
 ### ROS 串口
 
@@ -161,10 +161,10 @@ D:\STM32CubeCLT_1.20.0\CMake\bin\cmake.exe --build --preset Debug
 
 建议:
 
-- 8 data bits。
-- No parity。
-- 1 stop bit。
-- RX interrupt enabled。
+- 8 个数据位。
+- 无奇偶校验。
+- 1 个停止位。
+- 启用 RX 接收中断。
 - TX 可先阻塞发送，后续再升级 DMA/ring buffer。
 
 ### IMU QMI8658A
