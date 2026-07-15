@@ -3,6 +3,8 @@
 #include <limits.h>
 #include <string.h>
 
+/* 编码器累计模块在 16 位回绕域计算增量，并对 64 位长期累计执行饱和保护。 */
+
 static int64_t AppEncoderAccumulator_AddSaturated(int64_t total, int16_t delta)
 {
   const int64_t delta_wide = (int64_t)delta;

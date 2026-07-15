@@ -8,6 +8,8 @@
 #include <math.h>
 #include <string.h>
 
+/* IMU 应用层负责标定、质量检测、健康分级、非阻塞恢复以及独立输出滤波。 */
+
 #define APP_IMU_PI                         (3.14159265358979323846f)
 #define APP_IMU_TIMESTAMP_MASK             (0x00FFFFFFUL)
 #define APP_IMU_MAX_CALIBRATION_READ_ERRORS (20U)

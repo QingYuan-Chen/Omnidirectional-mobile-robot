@@ -5,6 +5,8 @@
 #include <math.h>
 #include <string.h>
 
+/* 姿态 ESKF 使用四元数名义状态和六维误差状态，不对输入增加普通低通。 */
+
 #define IMU_ESKF_INDEX(row, column, width) ((row) * (width) + (column))
 #define IMU_ESKF_GYRO_NOISE_VARIANCE       (4.0e-6f)
 #define IMU_ESKF_BIAS_NOISE_VARIANCE       (1.0e-7f)

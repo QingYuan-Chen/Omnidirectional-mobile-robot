@@ -10,6 +10,7 @@
 extern "C" {
 #endif
 
+/* 位标志描述数据是否可用以及传感器、估计器和恢复过程的细分状态。 */
 typedef enum {
   APP_IMU_FLAG_SENSOR_PRESENT = (1UL << 0U),
   APP_IMU_FLAG_CALIBRATED = (1UL << 1U),
@@ -29,6 +30,7 @@ typedef enum {
   APP_IMU_FLAG_ESTIMATOR_FAULT = (1UL << 15U)
 } AppImuFlags;
 
+/* 健康等级供安全任务直接决定是否禁止运动。 */
 typedef enum {
   APP_IMU_HEALTH_UNINITIALIZED = 0,
   APP_IMU_HEALTH_HEALTHY,
@@ -38,6 +40,7 @@ typedef enum {
   APP_IMU_HEALTH_ESTIMATOR_FAULT
 } AppImuHealth;
 
+/* IMU 完整输出同时携带数值、时间质量、健康状态和诊断计数。 */
 typedef struct {
   BspImuSample raw_sample;
   float acceleration_mps2[3];
@@ -70,7 +73,9 @@ typedef struct {
   uint32_t estimator_fault_count;
 } AppImuOutput;
 
+/* 静止采样完成陀螺零偏、噪声和重力一致性检查，并初始化 ESKF。 */
 BspStatus AppImu_Calibrate(void);
+/* 非阻塞处理一次样本或退避状态；无论返回值如何都填充最新输出。 */
 BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output);
 
 #ifdef __cplusplus

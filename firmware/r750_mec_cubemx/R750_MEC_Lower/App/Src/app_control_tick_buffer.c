@@ -2,6 +2,8 @@
 
 #include <stddef.h>
 
+/* 带序号环形缓冲区保证中断快照与计数型通知一一对应。 */
+
 _Static_assert(ROBOT_CONFIG_CONTROL_TICK_RING_SIZE >= 2U,
                "control tick ring requires at least two slots");
 _Static_assert((ROBOT_CONFIG_CONTROL_TICK_RING_SIZE &
@@ -72,6 +74,7 @@ bool AppControlTickBuffer_Consume(
   const uint32_t target_sequence = buffer->consumed_sequence + notification_count;
   volatile const AppControlTickSample *const slot =
     &buffer->slots[AppControlTickBuffer_Index(target_sequence)];
+  /* 序号不匹配表示目标槽尚未提交或已被后续中断覆盖，不能返回错配数据。 */
   if (slot->tick_sequence != target_sequence) {
     return false;
   }

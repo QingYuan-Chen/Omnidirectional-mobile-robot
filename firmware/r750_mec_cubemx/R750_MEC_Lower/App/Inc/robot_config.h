@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+/* 通信缓冲区和队列容量均为编译期上限，运行时不得由命令扩大。 */
 #define ROBOT_CONFIG_UART_BAUDRATE                 (230400U)
 #define ROBOT_CONFIG_UART_LINE_BUFFER_SIZE         (64U)
 #define ROBOT_CONFIG_UART_TX_QUEUE_DEPTH           (4U)
@@ -10,6 +11,7 @@
 #define ROBOT_CONFIG_MOTOR_COMMAND_QUEUE_DEPTH     (8U)
 #define ROBOT_CONFIG_CPU_CLOCK_HZ                  (168000000U)
 
+/* 编码器和车体几何参数用于后续 G2/G3 辨识及运动学换算。 */
 #define ROBOT_CONFIG_ENCODER_COUNTS_PER_MOTOR_REV (1024U)
 #define ROBOT_CONFIG_MOTOR_REDUCTION_RATIO        (30U)
 #define ROBOT_CONFIG_ENCODER_COUNTS_PER_WHEEL_REV \
@@ -19,6 +21,7 @@
 #define ROBOT_CONFIG_TRACK_WIDTH_M                (0.196f)
 #define ROBOT_CONFIG_WHEEL_BASE_M                 (0.160f)
 
+/* TIM7 候选控制节拍与心跳分频参数。 */
 #define ROBOT_CONFIG_CONTROL_RATE_HZ              (1000U)
 #define ROBOT_CONFIG_CONTROL_TIMER_CLOCK_HZ       (84000000U)
 #define ROBOT_CONFIG_CONTROL_TIMER_PRESCALER      (83U)
@@ -28,6 +31,8 @@
 #define ROBOT_CONFIG_CONTROL_HEARTBEAT_DIVIDER \
   ((ROBOT_CONFIG_CONTROL_RATE_HZ * ROBOT_CONFIG_CONTROL_HEARTBEAT_PERIOD_MS) / 1000U)
 #define ROBOT_CONFIG_CONTROL_TICK_RING_SIZE       (16U)
+
+/* IMU 采样、标定、质量判据和稳定恢复门槛。 */
 #define ROBOT_CONFIG_IMU_PERIOD_MS                (5U)
 #define ROBOT_CONFIG_IMU_ODR_HZ                   (224.2f)
 #define ROBOT_CONFIG_IMU_ACCEL_LSB_PER_G          (8192.0f)
@@ -41,6 +46,8 @@
 #define ROBOT_CONFIG_IMU_GYRO_SPIKE_LIMIT_RAD_S   (10.0f)
 #define ROBOT_CONFIG_IMU_PERSISTENT_FAULT_THRESHOLD (3U)
 #define ROBOT_CONFIG_IMU_RECOVERY_STABLE_SAMPLES  (8U)
+
+/* 任务周期和系统健康检查门槛。 */
 #define ROBOT_CONFIG_RUNTIME_READY_TIMEOUT_MS      (3000U)
 #define ROBOT_CONFIG_COMM_SERVICE_PERIOD_MS       (2U)
 #define ROBOT_CONFIG_TELEMETRY_PERIOD_MS          (20U)
@@ -48,10 +55,13 @@
 #define ROBOT_CONFIG_MONITOR_PERIOD_MS            (500U)
 #define ROBOT_CONFIG_HEALTH_MISS_LIMIT             (3U)
 
+/* MA 单电机试验的输出限幅、斜坡、反转制动和命令超时。 */
 #define ROBOT_CONFIG_PWM_LIMIT                    (4200)
 #define ROBOT_CONFIG_MA_OPEN_LOOP_PWM_LIMIT       (840)
 #define ROBOT_CONFIG_MA_PWM_RAMP_COUNTS_PER_MS    (1U)
 #define ROBOT_CONFIG_MA_REVERSE_BRAKE_TICKS       (1U)
+
+/* 电池分压和 ADC 整数换算参数，最终值仍需板上标定。 */
 #define ROBOT_CONFIG_BATTERY_DIVIDER_RATIO        (11.0f)
 #define ROBOT_CONFIG_ADC_VREF_MV                  (3300U)
 #define ROBOT_CONFIG_ADC_MAX_RAW                  (4095U)
@@ -61,6 +71,7 @@
 
 #define ROBOT_CONFIG_CMD_TIMEOUT_MS               (500U)
 
+/* 面向上层状态汇总的通用机器人状态，当前控制试验主要使用运行快照。 */
 typedef enum {
   ROBOT_STATUS_OK = 0,
   ROBOT_STATUS_CMD_TIMEOUT = 1,

@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <string.h>
 
+/* 逐字节解析器把不可信串口文本转换为有界、可验序的内部命令。 */
+
 _Static_assert(ROBOT_CONFIG_UART_LINE_BUFFER_SIZE >= 16U,
                "UART command line buffer is too small");
 

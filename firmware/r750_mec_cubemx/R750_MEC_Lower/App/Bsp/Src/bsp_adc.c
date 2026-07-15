@@ -3,6 +3,8 @@
 #include "adc.h"
 #include "robot_config.h"
 
+/* 电池 ADC 使用单次启动、轮询、停止流程，采样所有权位于通信任务。 */
+
 BspStatus BspAdc_Init(void)
 {
   return BSP_OK;
@@ -18,6 +20,7 @@ BspStatus BspAdc_ReadBatteryRaw(uint16_t *raw)
     return BSP_ERROR;
   }
 
+  /* 轮询参数受编译期上限约束，任何失败都先停止 ADC 再返回。 */
   const HAL_StatusTypeDef poll_status = HAL_ADC_PollForConversion(
     &hadc2, ROBOT_CONFIG_ADC_POLL_TIMEOUT_MS);
   if (poll_status != HAL_OK) {

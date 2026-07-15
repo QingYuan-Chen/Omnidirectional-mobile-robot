@@ -3,6 +3,8 @@
 #include "robot_config.h"
 #include "tim.h"
 
+/* 电机驱动使用双输入互补占空比，普通制动、普通空转和紧急空转语义严格区分。 */
+
 typedef struct {
   TIM_HandleTypeDef *timer;
   uint32_t forward_channel;
@@ -60,6 +62,7 @@ static uint32_t BspMotor_ClampMagnitude(const BspMotorPwm *pwm, int16_t command)
 
 BspStatus BspMotor_Init(void)
 {
+  /* 在复用功能和 PWM 通道启用前后都保持零输出，缩短潜在毛刺窗口。 */
   BspMotor_EmergencyCoastAll();
 
   HAL_TIM_MspPostInit(&htim1);
@@ -97,6 +100,7 @@ BspStatus BspMotor_SetPwm(BspMotorId motor, int16_t command)
   const uint32_t magnitude = BspMotor_ClampMagnitude(pwm, command);
 
   if (command > 0) {
+    /* 一侧保持满量程，另一侧用差值形成有效占空比，符号决定方向。 */
     __HAL_TIM_SET_COMPARE(pwm->timer, pwm->forward_channel, full_scale);
     __HAL_TIM_SET_COMPARE(pwm->timer, pwm->reverse_channel, full_scale - magnitude);
   } else if (command < 0) {
@@ -117,6 +121,7 @@ void BspMotor_Brake(BspMotorId motor)
 
   const BspMotorPwm *pwm = &motor_pwm[motor];
   const uint32_t full_scale = BspMotor_GetFullScale(pwm);
+  /* 两侧同时为高电平，对应驱动芯片的主动制动状态。 */
   __HAL_TIM_SET_COMPARE(pwm->timer, pwm->forward_channel, full_scale);
   __HAL_TIM_SET_COMPARE(pwm->timer, pwm->reverse_channel, full_scale);
 }
@@ -135,6 +140,7 @@ void BspMotor_Coast(BspMotorId motor)
   }
 
   const BspMotorPwm *pwm = &motor_pwm[motor];
+  /* 两侧同时为低电平，仅撤销当前驱动，不停止 PWM 定时器。 */
   __HAL_TIM_SET_COMPARE(pwm->timer, pwm->forward_channel, 0U);
   __HAL_TIM_SET_COMPARE(pwm->timer, pwm->reverse_channel, 0U);
 }
@@ -148,6 +154,7 @@ void BspMotor_CoastAll(void)
 
 void BspMotor_EmergencyCoastAll(void)
 {
+  /* 直接操作 GPIO 和定时器寄存器，使该路径在常规 HAL 初始化前后都可用。 */
   RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN | RCC_AHB1ENR_GPIOEEN;
   (void)RCC->AHB1ENR;
   __DSB();
@@ -172,6 +179,7 @@ void BspMotor_EmergencyCoastAll(void)
   TIM12->CCR1 = 0U;
   TIM12->CCR2 = 0U;
 
+  /* 清比较值、关闭通道和主输出，最后停止所有电机 PWM 定时器。 */
   TIM1->CCER = 0U;
   TIM9->CCER = 0U;
   TIM12->CCER = 0U;

@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <string.h>
 
+/* 发送队列复制完整帧，并通过原子索引在任务与中断之间发布所有权。 */
+
 _Static_assert(ROBOT_CONFIG_UART_TX_QUEUE_DEPTH > 0U,
                "UART TX queue depth must be non-zero");
 _Static_assert(ROBOT_CONFIG_UART_TX_FRAME_MAX_LENGTH > 0U,

@@ -6,6 +6,8 @@
 #include <limits.h>
 #include <stdatomic.h>
 
+/* UART 实现把逐字节接收、异步发送和错误恢复限制在 BSP 内部。 */
+
 #define BSP_UART_RX_BUFFER_SIZE (256U)
 #define BSP_UART_TX_STATE_IDLE       (0U)
 #define BSP_UART_TX_STATE_ACTIVE     (1U)

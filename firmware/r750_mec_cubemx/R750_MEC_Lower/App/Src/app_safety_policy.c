@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <string.h>
 
+/* 安全策略是纯状态机，不直接操作硬件，便于独立验证故障升级规则。 */
+
 void AppSafetyPolicy_Init(AppSafetyPolicy *policy)
 {
   if (policy != NULL) {

@@ -7,11 +7,14 @@
 #include "bsp_motor.h"
 #include "bsp_uart.h"
 
+/* 板级初始化总控记录失败阶段，并在每个失败出口强制电机进入安全状态。 */
+
 static BspInitStage bsp_init_stage = BSP_INIT_STAGE_NONE;
 static BspStatus bsp_init_status = BSP_ERROR;
 
 static BspStatus Bsp_InitComponent(BspInitStage stage, BspStatus (*init_function)(void))
 {
+  /* 先发布当前阶段再调用初始化函数，故障指示可准确定位失败模块。 */
   bsp_init_stage = stage;
   bsp_init_status = init_function();
   if (bsp_init_status != BSP_OK) {
@@ -22,6 +25,7 @@ static BspStatus Bsp_InitComponent(BspInitStage stage, BspStatus (*init_function
 
 BspStatus Bsp_Init(void)
 {
+  /* 即使 PWM 和 GPIO 尚未完成常规初始化，紧急空转路径也必须先执行。 */
   BspMotor_EmergencyCoastAll();
   bsp_init_stage = BSP_INIT_STAGE_NONE;
   bsp_init_status = BSP_ERROR;

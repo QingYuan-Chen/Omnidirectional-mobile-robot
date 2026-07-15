@@ -20,6 +20,8 @@
 
 #include <string.h>
 
+/* 任务编排层定义数据所有权、任务优先级、心跳、安全仲裁和运行快照发布。 */
+
 #define APP_EVENT_START             (1UL << 0U)
 #define APP_EVENT_CONTROL_HEARTBEAT (1UL << 1U)
 #define APP_EVENT_COMM_HEARTBEAT    (1UL << 2U)

@@ -2,6 +2,8 @@
 
 #include "i2c.h"
 
+/* QMI8658C 驱动严格按数据手册顺序完成复位、回读校验、命令应答和整帧读取。 */
+
 #define BSP_IMU_I2C_TIMEOUT_MS (2U)
 #define BSP_IMU_I2C_ADDRESS    (BSP_IMU_QMI8658_ADDRESS_7BIT << 1U)
 
@@ -59,6 +61,7 @@ static BspStatus BspImu_FromHal(HAL_StatusTypeDef status)
 
 static BspStatus BspImu_WriteChecked(uint8_t reg, uint8_t value)
 {
+  /* 关键控制寄存器写入后立即回读，拒绝静默配置失败。 */
   BspStatus status = BspImu_WriteReg(reg, value);
   if (status != BSP_OK) {
     return status;
@@ -97,6 +100,7 @@ static BspStatus BspImu_WaitStatusInt(uint8_t mask, bool set, uint32_t timeout_m
 
 static BspStatus BspImu_RunCtrl9Command(uint8_t command)
 {
+  /* 命令完成位必须经历置位、应答清零、再复位三个阶段。 */
   BspStatus status = BspImu_WriteReg(BSP_IMU_REG_CTRL9, command);
   if (status != BSP_OK) {
     return status;
@@ -123,6 +127,7 @@ static BspStatus BspImu_DisableAhbClockGating(void)
 
 BspStatus BspImu_Init(void)
 {
+  /* 先探测和核对身份，再软复位；配置期间保持传感器输出关闭。 */
   BspStatus status = BspImu_Probe();
   if (status != BSP_OK) {
     return status;
@@ -151,6 +156,7 @@ BspStatus BspImu_Init(void)
     return status == BSP_OK ? BSP_ERROR : status;
   }
 
+  /* 逐项配置量程、输出率和滤波参数，最后才统一启用加速度计和陀螺仪。 */
   status = BspImu_WriteChecked(BSP_IMU_REG_CTRL7, 0U);
   if (status != BSP_OK) {
     return status;
@@ -204,6 +210,7 @@ BspStatus BspImu_ReadSample(BspImuSample *sample)
     return BSP_BUSY;
   }
   if ((status_int & BSP_IMU_STATUS_INT_LOCKED) == 0U) {
+    /* 等待锁存保证本次突发读取中的各轴和时间戳属于同一采样时刻。 */
     status = BspImu_WaitStatusInt(BSP_IMU_STATUS_INT_LOCKED, true, BSP_IMU_LOCK_TIMEOUT_MS);
     if (status != BSP_OK) {
       return status;
@@ -213,6 +220,7 @@ BspStatus BspImu_ReadSample(BspImuSample *sample)
   uint8_t raw[BSP_IMU_SAMPLE_BYTE_COUNT];
   status = BspImu_ReadRegs(BSP_IMU_REG_STATUS0, raw, sizeof(raw));
   if (status != BSP_OK) {
+    /* 读取末寄存器可释放芯片数据锁，避免一次总线错误阻塞后续样本。 */
     uint8_t release_lock = 0U;
     (void)BspImu_ReadReg(BSP_IMU_REG_GYRO_Z_HIGH, &release_lock);
     return status;

@@ -2,6 +2,8 @@
 
 #include "main.h"
 
+/* 蜂鸣器为简单 GPIO 执行器，初始化默认关闭，避免上电误响。 */
+
 BspStatus BspBeep_Init(void)
 {
   BspBeep_Set(false);

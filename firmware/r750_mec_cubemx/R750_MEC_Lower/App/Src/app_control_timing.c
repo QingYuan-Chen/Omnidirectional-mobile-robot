@@ -3,6 +3,8 @@
 #include <limits.h>
 #include <string.h>
 
+/* 纯计算模块不依赖 HAL 或 RTOS，便于在主机端验证时序统计边界。 */
+
 #define APP_CONTROL_TIMING_MICROSECONDS_PER_SECOND (1000000U)
 
 static uint32_t AppControlTiming_AddSaturated(uint32_t value, uint32_t increment)

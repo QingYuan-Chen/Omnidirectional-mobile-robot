@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <string.h>
 
+/* 与硬件无关的 MA 开环状态机，所有输出必须再经过任务级安全仲裁后提交。 */
+
 _Static_assert(ROBOT_CONFIG_MA_OPEN_LOOP_PWM_LIMIT > 0,
                "MA open-loop limit must be positive");
 _Static_assert(ROBOT_CONFIG_MA_OPEN_LOOP_PWM_LIMIT <= ROBOT_CONFIG_PWM_LIMIT,

@@ -11,6 +11,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/* TIM7、DWT、编码器快照和直接任务通知共同构成确定性控制时基。 */
+
 _Static_assert(
   ROBOT_CONFIG_CONTROL_TIMER_IRQ_PRIORITY >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY,
   "TIM7 interrupt priority may not call FreeRTOS FromISR APIs");

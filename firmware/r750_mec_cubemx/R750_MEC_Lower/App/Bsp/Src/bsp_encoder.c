@@ -2,6 +2,8 @@
 
 #include "tim.h"
 
+/* 固定映射四路编码器定时器；数组索引必须与 BspMotorId 顺序一致。 */
+
 static TIM_HandleTypeDef *const encoder_timers[BSP_MOTOR_COUNT] = {
   [BSP_MOTOR_MA] = &htim2,
   [BSP_MOTOR_MB] = &htim3,
@@ -43,6 +45,7 @@ int16_t BspEncoder_ReadDelta(BspMotorId motor)
     return 0;
   }
 
+  /* 16 位减法后直接解释为有符号量，仅适用于单周期变化不跨半量程的场景。 */
   const uint16_t current = BspEncoder_ReadRaw(motor);
   const int16_t delta = (int16_t)(current - encoder_last_count[motor]);
   encoder_last_count[motor] = current;

@@ -15,6 +15,7 @@
 extern "C" {
 #endif
 
+/* 格式化器所需的只读字段集合，由通信任务从一致运行快照构造。 */
 typedef struct {
   uint32_t now_ms;
   uint16_t encoder_raw[BSP_MOTOR_COUNT];
@@ -36,6 +37,7 @@ typedef struct {
   bool fault_latched;
 } AppTelemetryInput;
 
+/* 写入一帧换行结尾的定长文本；容量不足时返回失败且长度保持为零。 */
 bool AppTelemetry_Format(
   const AppTelemetryInput *input,
   uint8_t *buffer,

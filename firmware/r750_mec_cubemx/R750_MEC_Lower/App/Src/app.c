@@ -9,8 +9,11 @@
 #include "main.h"
 #include "robot_config.h"
 
+/* 应用启动流程采用失败即安全停机策略，任何初始化异常都不会继续创建运行任务。 */
+
 static void App_FatalLoop(void)
 {
+  /* 故障循环持续给出 LED 指示，同时保持全部电机为不可恢复的紧急空转。 */
   BspMotor_EmergencyCoastAll();
   for (;;) {
     HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
@@ -20,6 +23,7 @@ static void App_FatalLoop(void)
 
 static bool App_WaitForRuntimeReady(void)
 {
+  /* 就绪条件要求 IMU 数据、时间戳、倾角和滤波器同时有效，不接受陈旧或故障状态。 */
   const uint32_t required_imu_flags =
     (uint32_t)APP_IMU_FLAG_CALIBRATED | (uint32_t)APP_IMU_FLAG_DATA_VALID |
     (uint32_t)APP_IMU_FLAG_FILTER_INITIALIZED | (uint32_t)APP_IMU_FLAG_FILTER_CONVERGED |
@@ -47,6 +51,7 @@ static bool App_WaitForRuntimeReady(void)
 void App_DefaultTask(void *argument)
 {
   (void)argument;
+  /* 板级初始化、静止标定和任务创建必须严格按顺序完成。 */
   const BspStatus init_status = Bsp_Init();
 
   if (init_status != BSP_OK) {
@@ -65,6 +70,7 @@ void App_DefaultTask(void *argument)
     App_FatalLoop();
   }
 
+  /* 蜂鸣器仅表示运行条件已满足，随后默认任务退出并释放栈空间。 */
   BspBeep_Set(true);
   osDelay(500U);
   BspBeep_Set(false);

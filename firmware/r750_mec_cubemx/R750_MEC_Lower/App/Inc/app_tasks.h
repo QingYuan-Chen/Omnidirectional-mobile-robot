@@ -8,10 +8,13 @@
 #include "bsp_types.h"
 #include "bsp_uart.h"
 
+/* 任务编排层集中管理控制、安全、通信、IMU和监控任务及其共享运行快照。 */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/* 固定任务编号同时作为任务句柄、栈余量数组的索引。 */
 typedef enum {
   APP_TASK_CONTROL = 0,
   APP_TASK_SAFETY,
@@ -21,6 +24,7 @@ typedef enum {
   APP_TASK_COUNT
 } AppTaskId;
 
+/* 通信任务累计的协议、串口、遥测和 ADC 诊断。 */
 typedef struct {
   AppCommProtocolStats protocol;
   BspUartStats uart_ttl;
@@ -32,6 +36,7 @@ typedef struct {
   uint32_t estop_command_count;
 } AppCommRuntimeSnapshot;
 
+/* 跨任务发布的整机运行快照；写入时使用短临界区保证字段组一致。 */
 typedef struct {
   uint16_t encoder_raw[BSP_MOTOR_COUNT];
   int16_t encoder_delta[BSP_MOTOR_COUNT];
@@ -48,7 +53,9 @@ typedef struct {
   bool fault_latched;
 } AppRuntimeSnapshot;
 
+/* 创建全部同步对象和任务，全部成功后再统一发布启动事件。 */
 BspStatus AppTasks_Create(void);
+/* 在临界区内复制运行快照，调用者获得独立副本。 */
 BspStatus AppTasks_GetSnapshot(AppRuntimeSnapshot *snapshot);
 
 #ifdef __cplusplus

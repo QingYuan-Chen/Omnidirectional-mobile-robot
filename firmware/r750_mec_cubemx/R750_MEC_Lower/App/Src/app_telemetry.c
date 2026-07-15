@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <string.h>
 
+/* 遥测格式化器使用固定标签和整数文本，保证内存占用及最坏帧长可计算。 */
+
 typedef struct {
   uint8_t *buffer;
   uint16_t capacity;
