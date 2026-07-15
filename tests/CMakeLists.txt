@@ -1,0 +1,35 @@
+cmake_minimum_required(VERSION 3.22)
+
+project(lower_controller_host_tests C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+
+enable_testing()
+
+set(APP_DIR "${CMAKE_CURRENT_LIST_DIR}/../firmware/r750_mec_cubemx/R750_MEC_Lower/App")
+
+add_executable(test_app_control_timing
+  test_app_control_timing.c
+  "${APP_DIR}/Src/app_control_timing.c"
+)
+target_include_directories(test_app_control_timing PRIVATE "${APP_DIR}/Inc")
+target_compile_options(test_app_control_timing PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME app_control_timing COMMAND test_app_control_timing)
+
+add_executable(test_app_encoder_accumulator
+  test_app_encoder_accumulator.c
+  "${APP_DIR}/Src/app_encoder_accumulator.c"
+)
+target_include_directories(test_app_encoder_accumulator PRIVATE "${APP_DIR}/Inc" "${APP_DIR}/Bsp/Inc")
+target_compile_options(test_app_encoder_accumulator PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME app_encoder_accumulator COMMAND test_app_encoder_accumulator)
+
+add_executable(test_app_control_tick_buffer
+  test_app_control_tick_buffer.c
+  "${APP_DIR}/Src/app_control_tick_buffer.c"
+)
+target_include_directories(test_app_control_tick_buffer PRIVATE "${APP_DIR}/Inc" "${APP_DIR}/Bsp/Inc")
+target_compile_options(test_app_control_tick_buffer PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME app_control_tick_buffer COMMAND test_app_control_tick_buffer)

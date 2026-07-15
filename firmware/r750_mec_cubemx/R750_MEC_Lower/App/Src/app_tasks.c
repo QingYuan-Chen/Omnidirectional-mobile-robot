@@ -1,6 +1,9 @@
 #include "app_tasks.h"
 
 #include "FreeRTOS.h"
+#include "app_control_timebase.h"
+#include "app_control_timing.h"
+#include "app_encoder_accumulator.h"
 #include "app_imu.h"
 #include "bsp_adc.h"
 #include "bsp_encoder.h"
@@ -26,6 +29,12 @@
 #define APP_COMM_STACK_BYTES    (1536U)
 #define APP_IMU_STACK_BYTES     (1536U)
 #define APP_MONITOR_STACK_BYTES (1024U)
+
+_Static_assert(
+  ((ROBOT_CONFIG_CONTROL_RATE_HZ * ROBOT_CONFIG_CONTROL_HEARTBEAT_PERIOD_MS) % 1000U) == 0U,
+  "control heartbeat period must contain an integer number of control ticks");
+_Static_assert(ROBOT_CONFIG_CONTROL_HEARTBEAT_DIVIDER > 0U,
+               "control heartbeat divider must be non-zero");
 
 static osEventFlagsId_t runtime_events;
 static osThreadId_t task_handles[APP_TASK_COUNT];
@@ -74,10 +83,13 @@ static void AppTasks_StopCreatedThreads(void)
   }
 }
 
-static void AppTasks_FailCurrentThread(void)
+static _Noreturn void AppTasks_FailCurrentThread(void)
 {
+  (void)AppControlTimebase_Stop();
   BspMotor_EmergencyCoastAll();
   osThreadExit();
+  for (;;) {
+  }
 }
 
 BspStatus AppTasks_Create(void)
@@ -130,16 +142,61 @@ static void AppTasks_Control(void *argument)
   }
 
   BspMotor_BrakeAll();
-  TickType_t last_wake = xTaskGetTickCount();
+  uint16_t initial_encoder_raw[BSP_MOTOR_COUNT];
+  for (uint32_t i = 0U; i < (uint32_t)BSP_MOTOR_COUNT; ++i) {
+    initial_encoder_raw[i] = BspEncoder_ReadRaw((BspMotorId)i);
+  }
+
+  AppEncoderAccumulator encoder_accumulator;
+  AppControlTiming control_timing;
+  if (!AppEncoderAccumulator_Init(&encoder_accumulator, initial_encoder_raw) ||
+      !AppControlTiming_Init(&control_timing, SystemCoreClock, ROBOT_CONFIG_CONTROL_RATE_HZ) ||
+      AppControlTimebase_Start() != BSP_OK) {
+    AppTasks_FailCurrentThread();
+  }
+
+  uint32_t heartbeat_divider = 0U;
+  bool heartbeat_pending = false;
 
   for (;;) {
+    AppControlTick tick;
     int16_t encoder_delta[BSP_MOTOR_COUNT];
-    for (uint32_t i = 0U; i < BSP_MOTOR_COUNT; ++i) {
-      encoder_delta[i] = BspEncoder_ReadDelta((BspMotorId)i);
+    int64_t encoder_total[BSP_MOTOR_COUNT];
+    if (AppControlTimebase_Wait(&tick) != BSP_OK) {
+      AppTasks_FailCurrentThread();
     }
 
+    /* 发布的是上一个已经完整结束的控制周期；本次发布开销计入当前周期 WCET。 */
+    if (heartbeat_pending) {
+      AppControlTimingSnapshot timing_snapshot;
+      if (!AppControlTiming_GetSnapshot(&control_timing, &timing_snapshot)) {
+        AppTasks_FailCurrentThread();
+      }
+      taskENTER_CRITICAL();
+      runtime_snapshot.control_timing = timing_snapshot;
+      taskEXIT_CRITICAL();
+      (void)osEventFlagsSet(runtime_events, APP_EVENT_CONTROL_HEARTBEAT);
+      heartbeat_pending = false;
+    }
+
+    if (!AppEncoderAccumulator_Update(
+          &encoder_accumulator, tick.encoder_raw, encoder_delta, encoder_total)) {
+      AppTasks_FailCurrentThread();
+    }
+
+    AppControlTiming_RecordWake(
+      &control_timing,
+      tick.tick_sequence,
+      tick.irq_timestamp_cycles,
+      tick.irq_period_cycles,
+      tick.timer_irq_missed_period_count,
+      tick.task_wake_cycles,
+      tick.notification_count);
+
     taskENTER_CRITICAL();
+    memcpy(runtime_snapshot.encoder_raw, tick.encoder_raw, sizeof(tick.encoder_raw));
     memcpy(runtime_snapshot.encoder_delta, encoder_delta, sizeof(encoder_delta));
+    memcpy(runtime_snapshot.encoder_total, encoder_total, sizeof(encoder_total));
     const bool fault_latched = runtime_snapshot.fault_latched;
     taskEXIT_CRITICAL();
 
@@ -147,8 +204,13 @@ static void AppTasks_Control(void *argument)
       BspMotor_BrakeAll();
     }
 
-    (void)osEventFlagsSet(runtime_events, APP_EVENT_CONTROL_HEARTBEAT);
-    vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(ROBOT_CONFIG_CONTROL_PERIOD_MS));
+    heartbeat_divider++;
+    if (heartbeat_divider >= ROBOT_CONFIG_CONTROL_HEARTBEAT_DIVIDER) {
+      heartbeat_pending = true;
+      heartbeat_divider = 0U;
+    }
+
+    AppControlTiming_RecordComplete(&control_timing, AppControlTimebase_GetCycleCount());
   }
 }
 

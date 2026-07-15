@@ -45,6 +45,10 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/app.c
+    App/Src/app_control_timebase.c
+    App/Src/app_control_tick_buffer.c
+    App/Src/app_control_timing.c
+    App/Src/app_encoder_accumulator.c
     App/Src/app_imu.c
     App/Src/app_tasks.c
     App/Src/imu_eskf.c

@@ -27,6 +27,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "app_control_timebase.h"
 #include "bsp_motor.h"
 
 /* USER CODE END Includes */
@@ -102,6 +103,7 @@ int main(void)
   MX_TIM5_Init();
   MX_TIM9_Init();
   MX_TIM12_Init();
+  MX_TIM7_Init();
   MX_UART4_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
@@ -195,6 +197,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
+
+  if (htim->Instance == TIM7)
+  {
+    AppControlTimebase_OnTimerElapsedFromIsr();
+  }
 
   /* USER CODE END Callback 1 */
 }

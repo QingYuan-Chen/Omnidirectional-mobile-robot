@@ -1,6 +1,7 @@
 #ifndef APP_TASKS_H
 #define APP_TASKS_H
 
+#include "app_control_timing.h"
 #include "app_imu.h"
 #include "bsp_types.h"
 
@@ -18,7 +19,10 @@ typedef enum {
 } AppTaskId;
 
 typedef struct {
+  uint16_t encoder_raw[BSP_MOTOR_COUNT];
   int16_t encoder_delta[BSP_MOTOR_COUNT];
+  int64_t encoder_total[BSP_MOTOR_COUNT];
+  AppControlTimingSnapshot control_timing;
   AppImuOutput imu;
   uint16_t battery_millivolts;
   uint32_t health_miss_count;
