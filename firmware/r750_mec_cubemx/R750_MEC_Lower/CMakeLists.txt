@@ -45,12 +45,14 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/app.c
+    App/Src/app_comm_protocol.c
     App/Src/app_control_timebase.c
     App/Src/app_control_tick_buffer.c
     App/Src/app_control_timing.c
     App/Src/app_encoder_accumulator.c
     App/Src/app_motor_open_loop.c
     App/Src/app_safety_policy.c
+    App/Src/app_telemetry.c
     App/Src/app_imu.c
     App/Src/app_tasks.c
     App/Src/imu_eskf.c
@@ -61,6 +63,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Bsp/Src/bsp_imu.c
     App/Bsp/Src/bsp_motor.c
     App/Bsp/Src/bsp_uart.c
+    App/Bsp/Src/bsp_uart_tx_queue.c
 )
 
 # Add include paths

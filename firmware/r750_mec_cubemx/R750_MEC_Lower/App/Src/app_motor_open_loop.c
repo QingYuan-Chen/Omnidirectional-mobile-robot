@@ -170,8 +170,23 @@ bool AppMotorOpenLoop_Step(
     controller->disarm_at_zero = false;
   }
 
+  AppMotorRequestType request_type = request->type;
+  if (request_type == APP_MOTOR_REQUEST_ARM ||
+      request_type == APP_MOTOR_REQUEST_SET_PWM ||
+      request_type == APP_MOTOR_REQUEST_STOP) {
+    if (controller->snapshot.has_sequence &&
+        !AppMotorOpenLoop_SequenceIsNewer(
+          request->sequence, controller->snapshot.last_sequence)) {
+      AppMotorOpenLoop_RejectRequest(controller);
+      request_type = APP_MOTOR_REQUEST_NONE;
+    } else {
+      controller->snapshot.last_sequence = request->sequence;
+      controller->snapshot.has_sequence = true;
+    }
+  }
+
   bool command_refreshed = false;
-  switch (request->type) {
+  switch (request_type) {
     case APP_MOTOR_REQUEST_NONE:
       break;
 
@@ -181,7 +196,6 @@ bool AppMotorOpenLoop_Step(
         break;
       }
       controller->snapshot.state = APP_MOTOR_OPEN_LOOP_ARMED;
-      controller->snapshot.has_sequence = false;
       controller->snapshot.target_pwm = 0;
       controller->snapshot.applied_pwm = 0;
       controller->last_valid_command_ms = now_ms;
@@ -192,16 +206,11 @@ bool AppMotorOpenLoop_Step(
 
     case APP_MOTOR_REQUEST_SET_PWM:
       if (!AppMotorOpenLoop_IsCommandState(controller->snapshot.state) ||
-          controller->timeout_active || controller->disarm_at_zero ||
-          (controller->snapshot.has_sequence &&
-           !AppMotorOpenLoop_SequenceIsNewer(
-             request->sequence, controller->snapshot.last_sequence))) {
+          controller->timeout_active || controller->disarm_at_zero) {
         AppMotorOpenLoop_RejectRequest(controller);
         break;
       }
       controller->snapshot.target_pwm = AppMotorOpenLoop_ClampPwm(controller, request->pwm);
-      controller->snapshot.last_sequence = request->sequence;
-      controller->snapshot.has_sequence = true;
       if (controller->snapshot.target_pwm == 0) {
         controller->snapshot.state = APP_MOTOR_OPEN_LOOP_STOPPING;
       } else if (controller->snapshot.state != APP_MOTOR_OPEN_LOOP_REVERSING_BRAKE) {

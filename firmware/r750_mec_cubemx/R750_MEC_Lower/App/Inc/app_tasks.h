@@ -1,10 +1,12 @@
 #ifndef APP_TASKS_H
 #define APP_TASKS_H
 
+#include "app_comm_protocol.h"
 #include "app_control_timing.h"
 #include "app_imu.h"
 #include "app_motor_open_loop.h"
 #include "bsp_types.h"
+#include "bsp_uart.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,11 +22,23 @@ typedef enum {
 } AppTaskId;
 
 typedef struct {
+  AppCommProtocolStats protocol;
+  BspUartStats uart_ttl;
+  uint32_t command_queue_drop_count;
+  uint32_t telemetry_enqueued_count;
+  uint32_t telemetry_enqueue_drop_count;
+  uint32_t telemetry_format_error_count;
+  uint32_t adc_error_count;
+  uint32_t estop_command_count;
+} AppCommRuntimeSnapshot;
+
+typedef struct {
   uint16_t encoder_raw[BSP_MOTOR_COUNT];
   int16_t encoder_delta[BSP_MOTOR_COUNT];
   int64_t encoder_total[BSP_MOTOR_COUNT];
   AppControlTimingSnapshot control_timing;
   AppMotorOpenLoopSnapshot motor_open_loop;
+  AppCommRuntimeSnapshot communication;
   AppImuOutput imu;
   uint16_t battery_millivolts;
   uint32_t health_miss_count;

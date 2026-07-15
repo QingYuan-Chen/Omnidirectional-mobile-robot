@@ -159,7 +159,7 @@ D:\STM32CubeCLT_1.20.0\CMake\bin\cmake.exe --build --preset Debug
 | USART2 | ROS USB 通信串口 | PD5 TX / PD6 RX | 230400 |
 | UART4 | 人类调试、辨识采集和临时调参 | PC10 TX / PC11 RX | 230400 |
 
-当前第一版优先启用 USART2。UART4 可保留配置但业务先不依赖。
+USART2 保留给后续 ROS/X-Protocol。G1.3 已启用 UART4 作为临时试验命令、辨识采集和完整遥测通道。
 
 建议:
 
@@ -167,7 +167,7 @@ D:\STM32CubeCLT_1.20.0\CMake\bin\cmake.exe --build --preset Debug
 - 无奇偶校验。
 - 1 个停止位。
 - 启用 RX 接收中断。
-- TX 可先阻塞发送，后续再升级 DMA/ring buffer。
+- UART4 TX 已使用中断驱动的非阻塞帧队列；DMA + IDLE 仍留到 M6 评审。
 
 ### IMU QMI8658A
 

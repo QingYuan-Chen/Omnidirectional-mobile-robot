@@ -107,7 +107,7 @@
 
 - 新增与 HAL 无关的 MA 开环状态机：上电保持未使能，显式 ARM 后才接受 PWM；硬限幅为 840，斜坡为 1 count/ms，反转先降到零并至少 Brake 1 个控制节拍。
 - `STOP` 使用同一斜坡受控减速，停稳后 Brake；500 ms 命令超时强制减速到零并进入 `DISARMED`。超时减速期间新序号 PWM 和 `STOP` 都不能取消失效保护，必须停稳后显式重新 ARM。
-- 只允许 MA 进入普通 Drive/Brake；每个正常输出周期都把 MB、MC、MD 强制为 Coast。G1.2 没有 UART 运动命令调用者，因此当前固件不能自主驱动电机。
+- 只允许 MA 进入普通 Drive/Brake；每个正常输出周期都把 MB、MC、MD 强制为 Coast。G1.2 提交完成时没有 UART 运动命令调用者，因此该阶段固件不能自主驱动电机；G1.3 后续已接入受安全协议约束的调用者。
 - 新增独立安全策略：首次关键心跳窗口缺失或 IMU 非健康只触发普通 Coast 型运动禁止；连续 3 个关键心跳窗口缺失或外部硬故障才锁存并调用破坏性的 `BspMotor_EmergencyCoastAll()`，只能系统复位恢复。
 - Control 与 Safety 使用不屏蔽 TIM7 ISR 的短任务级执行器仲裁区，完整串行化“最终安全门复核—PWM 提交”和“安全状态发布—Coast/Emergency”，关闭普通 Coast 被旧控制快照覆盖的竞态；仲裁开销计入控制周期 WCET。
 - 关键心跳改为单次 `osEventFlagsClear()` 并使用其清除前位值，消除 `Get` 与 `Clear` 之间到达的新心跳被误清除的窗口。IMU 任务在退避期间继续按原有路径上报心跳。
@@ -115,3 +115,16 @@
 - Debug/Release 全量构建均为 63/63 通过；最后一处超时 STOP 门槛修正后对应源文件已重新编译并重新链接。最终记录为 RAM 41,584 B；Flash 75,100 B / 43,788 B。3 个新增或主要受影响源文件通过 `-Wextra -Wshadow -Wconversion -Werror` 和 GCC `-fanalyzer`，严格告警与静态分析为 3/3 通过。
 - 代码/交付质量与原框架适配/参数遗漏两名独立审批者在阻断问题整改后均明确通过。
 - 尚未执行板上 PWM 波形、MA 低功率运动、普通 Coast/Brake、故障注入、WCET、抖动、栈水位和延期的 M1.3 联合验收；G1.2 状态为“软件完成、待板测”。
+
+## 2026-07-15：完成 M2 G1.3 UART4 命令与遥测软件
+
+- 实现大写 ASCII 临时协议：`ARM <seq>`、`PWM <seq> <value>`、`STOP <seq>`、`ESTOP`、`STATUS`。LF 前最多 64 B，并允许尾随 CR；严格检查 uint32/int32 溢出、±840 边界、控制字符、旧序号和行溢出。
+- `ARM/PWM/STOP` 共用 32 位半区间单调序号，并改为“深度 8 的有序命令队列成功入队后才提交序号”。队列满允许同序号重试；电机状态机对三类命令统一消费序号，关闭跨 STOP 和队满大跳导致协议层/电机层序号漂移的问题。`controlTask` 每个 TIM7 节拍最多消费 1 条。
+- 格式错误、旧序号、越界和模拟队列满测试均确认不刷新 500 ms 电机超时。`ESTOP` 绕过普通命令队列，在既有任务级执行器仲裁内立即锁存故障并调用 Emergency Coast；遥测明确报告需要系统复位。
+- 删除应用层阻塞 UART 发送入口，使用 `HAL_UART_Transmit_IT()`、每端口深度 4/单帧 384 B 的帧队列和回调串链。RX/TX 任务—ISR共享索引、统计和发送所有权改为 C11 原子；发送启动先取得原子所有权再读取队首，避免完成 ISR 插入后重复发送旧帧。
+- `commTask` 从 5 ms/1536 B 调整为 2 ms/2048 B。ADC 单一所有权从 `monitorTask` 移到 `commTask`，只按 20 ms 周期采样，`HAL_ADC_PollForConversion` 参数由 10 ms 收紧为 1 ms；`STATUS/ESTOP` 复用最近电池快照，不增加 ADC 频率。
+- 20 ms 有界整数遥测覆盖控制时间戳/节拍、四路编码器原始/增量/累计计数、MA 目标/实际 PWM、电池、安全/复位、IMU `sample_age_ms`/健康等级、IRQ 抖动、唤醒延迟、最大 WCET、漏周期/截止期和通信故障计数。全极值帧在 384 B 内至少保留 6 B，并通过 230400 8N1/20 ms 持续吞吐静态预算检查。
+- 主机测试扩展为 9/9：新增实际 `bsp_uart.c` 配合假 HAL 的回调链、HAL_BUSY、起发失败、队满、丢完成回调恢复、伪回调和起发函数返回前完成测试；同时覆盖两阶段序号提交、跨 STOP 半区间、64/65 B 行边界、空白/控制字符、PWM 边界、非法命令/模拟队满不续命及遥测全部标签/帧预算。
+- Debug/Release 全量构建均为 66/66 通过。最终记录为 RAM 46,696/46,688 B；Flash 83,608/47,564 B。`app_comm_protocol.c`、`app_motor_open_loop.c`、`app_telemetry.c`、`app_tasks.c`、`bsp_adc.c`、`bsp_uart.c`、`bsp_uart_tx_queue.c` 共 7 个关键源文件通过 `-Wall -Wextra -Wshadow -Wconversion -Werror` 和 GCC `-fanalyzer`。
+- 代码/交付质量与原框架适配/参数遗漏两名独立审批者在阻断问题整改后均明确通过。
+- 尚未执行 UART4 板上持续收发/拥塞/错误恢复、ADC 电压标定、MA 实际运动、WCET/抖动/栈水位和延期的 M1.3 联合验收；G1.3 状态为“软件完成、待板测”。

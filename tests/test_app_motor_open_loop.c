@@ -42,10 +42,14 @@ static void Step(
     output));
 }
 
-static void Arm(AppMotorOpenLoop *controller, uint32_t now_ms)
+static void Arm(
+  AppMotorOpenLoop *controller,
+  uint32_t now_ms,
+  uint32_t sequence)
 {
   AppMotorOpenLoopOutput output;
-  const AppMotorOpenLoopRequest request = Request(APP_MOTOR_REQUEST_ARM, 0U, 0);
+  const AppMotorOpenLoopRequest request = Request(
+    APP_MOTOR_REQUEST_ARM, sequence, 0);
   Step(controller, now_ms, false, false, &request, &output);
   assert(output.mode == APP_MOTOR_OUTPUT_BRAKE);
   assert(controller->snapshot.state == APP_MOTOR_OPEN_LOOP_ARMED);
@@ -78,7 +82,7 @@ static void TestLimitRampAndSequence(void)
   AppMotorOpenLoop controller;
   AppMotorOpenLoopOutput output;
   AppMotorOpenLoop_Init(&controller, 0U);
-  Arm(&controller, 0U);
+  Arm(&controller, 0U, 0U);
 
   AppMotorOpenLoopRequest request = Request(APP_MOTOR_REQUEST_SET_PWM, 1U, 1000);
   Step(&controller, 10U, false, false, &request, &output);
@@ -113,7 +117,7 @@ static void TestReverseCrossesZeroAndBrakes(void)
   AppMotorOpenLoop controller;
   AppMotorOpenLoopOutput output;
   AppMotorOpenLoop_Init(&controller, 0U);
-  Arm(&controller, 0U);
+  Arm(&controller, 0U, 0U);
 
   AppMotorOpenLoopRequest request = Request(APP_MOTOR_REQUEST_SET_PWM, 1U, 10);
   Step(&controller, 10U, false, false, &request, &output);
@@ -147,11 +151,11 @@ static void TestStopAndTimeout(void)
   AppMotorOpenLoop controller;
   AppMotorOpenLoopOutput output;
   AppMotorOpenLoop_Init(&controller, 0U);
-  Arm(&controller, 0U);
+  Arm(&controller, 0U, 0U);
 
   AppMotorOpenLoopRequest request = Request(APP_MOTOR_REQUEST_SET_PWM, 1U, 20);
   Step(&controller, 20U, false, false, &request, &output);
-  request = Request(APP_MOTOR_REQUEST_STOP, 0U, 0);
+  request = Request(APP_MOTOR_REQUEST_STOP, 2U, 0);
   Step(&controller, 30U, false, false, &request, &output);
   assert(controller.snapshot.applied_pwm == 10);
   assert(controller.snapshot.state == APP_MOTOR_OPEN_LOOP_STOPPING);
@@ -165,7 +169,7 @@ static void TestStopAndTimeout(void)
   assert(controller.snapshot.state == APP_MOTOR_OPEN_LOOP_DISARMED);
 
   AppMotorOpenLoop_Init(&controller, 0U);
-  Arm(&controller, 0U);
+  Arm(&controller, 0U, 0U);
   request = Request(APP_MOTOR_REQUEST_SET_PWM, 1U, 100);
   Step(&controller, 100U, false, false, &request, &output);
   Step(&controller, 599U, false, false, &no_request, &output);
@@ -177,11 +181,11 @@ static void TestStopAndTimeout(void)
   assert(controller.snapshot.state == APP_MOTOR_OPEN_LOOP_STOPPING);
   assert(controller.timeout_active);
   assert(controller.disarm_at_zero);
-  request = Request(APP_MOTOR_REQUEST_STOP, 0U, 0);
+  request = Request(APP_MOTOR_REQUEST_STOP, 2U, 0);
   Step(&controller, 601U, false, false, &request, &output);
   assert(controller.timeout_active);
   assert(controller.disarm_at_zero);
-  request = Request(APP_MOTOR_REQUEST_SET_PWM, 2U, 100);
+  request = Request(APP_MOTOR_REQUEST_SET_PWM, 3U, 100);
   Step(&controller, 602U, false, false, &request, &output);
   assert(controller.snapshot.rejected_command_count == 1U);
   assert(controller.snapshot.target_pwm == 0);
@@ -193,8 +197,8 @@ static void TestStopAndTimeout(void)
   Step(&controller, 700U, false, false, &request, &output);
   assert(controller.snapshot.rejected_command_count == 2U);
   assert(controller.snapshot.state == APP_MOTOR_OPEN_LOOP_DISARMED);
-  Arm(&controller, 701U);
-  request = Request(APP_MOTOR_REQUEST_SET_PWM, 3U, 10);
+  Arm(&controller, 701U, 4U);
+  request = Request(APP_MOTOR_REQUEST_SET_PWM, 5U, 10);
   Step(&controller, 702U, false, false, &request, &output);
   assert(controller.snapshot.state == APP_MOTOR_OPEN_LOOP_RUNNING);
   assert(controller.snapshot.applied_pwm == 1);
@@ -205,7 +209,7 @@ static void TestInhibitAndLatchedFaults(void)
   AppMotorOpenLoop controller;
   AppMotorOpenLoopOutput output;
   AppMotorOpenLoop_Init(&controller, 0U);
-  Arm(&controller, 0U);
+  Arm(&controller, 0U, 0U);
   AppMotorOpenLoopRequest request = Request(APP_MOTOR_REQUEST_SET_PWM, 1U, 10);
   Step(&controller, 10U, false, false, &request, &output);
 
@@ -253,7 +257,7 @@ static void TestCountersSaturate(void)
 
   AppMotorOpenLoop_Init(&controller, 0U);
   controller.snapshot.clamped_command_count = UINT32_MAX;
-  Arm(&controller, 0U);
+  Arm(&controller, 0U, 0U);
   request = Request(APP_MOTOR_REQUEST_SET_PWM, 1U, 1000);
   Step(&controller, 1U, false, false, &request, &output);
   assert(controller.snapshot.clamped_command_count == UINT32_MAX);
@@ -271,7 +275,7 @@ static void TestTickWrap(void)
   AppMotorOpenLoop controller;
   AppMotorOpenLoopOutput output;
   AppMotorOpenLoop_Init(&controller, UINT32_MAX - 5U);
-  Arm(&controller, UINT32_MAX - 5U);
+  Arm(&controller, UINT32_MAX - 5U, 0U);
   AppMotorOpenLoopRequest request = Request(APP_MOTOR_REQUEST_SET_PWM, 1U, 10);
   Step(&controller, UINT32_MAX - 1U, false, false, &request, &output);
   assert(controller.snapshot.applied_pwm == 4);

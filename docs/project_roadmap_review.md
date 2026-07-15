@@ -18,7 +18,7 @@
 
 | 状态 | 内容 |
 |---|---|
-| 已完成 | M0 仓库/UART 恢复；M1 IMU 数据质量、非阻塞退避、故障分级和稳定恢复的软件实现；CubeMX/CMake、BSP 和五任务 FreeRTOS 基线 |
+| 已完成 | M0 仓库/UART 恢复；M1 IMU 数据质量、非阻塞退避、故障分级和稳定恢复的软件实现；M2 G1.0 资源审查及 G1.1-G1.3 确定性时基、MA 安全开环、UART4 命令/遥测软件 |
 | 进行中 | M2 控制架构决策门；M1.3 板测随 M2 试验台执行。执行依据见 `m2_control_architecture_gate.md` 和 `plan_review_and_directives.md` v3 |
 | 后续待实现 | 最终单电机闭环、M3 人机交互、四轮闭环、麦轮运动学、里程计、X-Protocol/ROS2 联调、IWDG、低电压策略、UART DMA 和生产级资源验证 |
 

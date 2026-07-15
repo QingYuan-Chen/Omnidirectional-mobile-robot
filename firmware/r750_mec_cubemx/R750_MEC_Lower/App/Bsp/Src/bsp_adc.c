@@ -18,7 +18,8 @@ BspStatus BspAdc_ReadBatteryRaw(uint16_t *raw)
     return BSP_ERROR;
   }
 
-  const HAL_StatusTypeDef poll_status = HAL_ADC_PollForConversion(&hadc2, 10U);
+  const HAL_StatusTypeDef poll_status = HAL_ADC_PollForConversion(
+    &hadc2, ROBOT_CONFIG_ADC_POLL_TIMEOUT_MS);
   if (poll_status != HAL_OK) {
     (void)HAL_ADC_Stop(&hadc2);
     return poll_status == HAL_TIMEOUT ? BSP_TIMEOUT : BSP_ERROR;

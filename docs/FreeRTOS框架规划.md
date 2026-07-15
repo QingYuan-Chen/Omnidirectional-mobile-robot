@@ -15,11 +15,11 @@
 | `defaultTask` | 一次性 | Normal | 2048 B | BSP 初始化、IMU 静止标定、创建任务、就绪提示、自删除 |
 | `controlTask` | TIM7 候选 1 kHz | High | 1536 B | 等待硬件直接通知、消费四路编码器序号快照、记录时序诊断并推进 MA 安全开环状态机 |
 | `safetyTask` | 100 ms | High | 1024 B | 原子清点关键心跳、发布运动禁止、普通 Coast 覆盖、锁存故障并触发 Emergency Coast |
-| `commTask` | 5 ms | AboveNormal | 1536 B | UART 接收恢复，后续承接协议解析和遥测 |
+| `commTask` | 2 ms | AboveNormal | 2048 B | UART 接收/恢复、临时协议、命令分发、非阻塞 TX 服务；每 20 ms 采集电池并发布遥测 |
 | `imuTask` | DRDY，10 ms 超时兜底 | AboveNormal | 1536 B | 同步读取 QMI8658A、校验时间戳、SI/机体系转换、6 状态 ESKF、发布有效性快照 |
-| `monitorTask` | 500 ms | Low | 1024 B | 电池电压、运行灯、任务剩余栈监测 |
+| `monitorTask` | 500 ms | Low | 1024 B | 运行灯和任务剩余栈监测，只读取已发布快照，不操作 ADC |
 
-CMSIS-RTOS2 的 `stack_size` 单位是字节。GCC 静态栈报告中，ESKF 最重单函数为 312 B，`imuTask` 入口为 160 B；1536 B 仍保留调用链和 HAL/CMSIS 中断余量。最终必须根据 `osThreadGetStackSpace()` 的实机最小余量再收敛，目标是最坏工况仍保留至少 25% 且不少于 256 B。
+CMSIS-RTOS2 的 `stack_size` 单位是字节。GCC 静态栈报告中，ESKF 最重单函数为 312 B，`imuTask` 入口为 160 B；`commTask` 因增加协议解析、ADC 和遥测调用链，软件阶段先保守提高到 2048 B。最终必须根据 `osThreadGetStackSpace()` 的实机最小余量再收敛，目标是最坏工况仍保留至少 25% 且不少于 256 B。
 
 当前 `configUSE_PREEMPTION=1`，表中的优先级是抢占优先级。Control 与 Safety 同为 High，Comm 与 IMU 同为 AboveNormal；同优先级任务都必须主动阻塞，不能长时间占用 CPU。
 
@@ -31,9 +31,18 @@ CMSIS-RTOS2 的 `stack_size` 单位是字节。GCC 静态栈报告中，ESKF 最
 4. 应用任务创建后先等待 `APP_EVENT_START`，避免部分任务在框架尚未创建完成时运行。
 5. 全部任务创建成功后统一放行。IMU 滤波器达到收敛条件且数据、时间戳、倾角均有效后，蜂鸣器响 0.5 s；随后 `defaultTask` 自删除并归还栈。
 6. Control、Comm、IMU 使用事件标志上报心跳；Safety 每 100 ms 用一次清除操作取得清除前事件位，避免读取与清除之间丢失新心跳。首次缺失触发普通 Coast，连续 3 个窗口缺失才锁存故障。普通可恢复 IMU 降级只置 `motion_inhibited` 并持续恢复，不永久锁存。
-7. 运行数据通过短临界区发布快照。高频数据不通过长队列复制，串口协议完成后再增加长度为 1 的最新速度命令邮箱和独立 TX 队列。
+7. 运行数据通过短临界区发布快照。G1.3 的 `ARM/PWM/STOP` 使用深度 8 的有序命令队列，`controlTask` 每个 TIM7 节拍最多消费 1 条；不能使用“长度 1 最新值覆盖”语义，因为 ARM、STOP 和 PWM 的先后关系属于安全协议。UART TX 使用每端口深度 4、单帧上限 384 B 的独立队列。
 
 可恢复 IMU 降级或尚未达到锁存门槛的心跳缺失发布运动禁止，并由 `safetyTask` 先执行普通 Coast 覆盖。Control 的最终门复核与 PWM 提交、Safety 的门状态发布与 Coast/Emergency 位于同一种短任务级仲裁区；该区域不屏蔽 TIM7 ISR，且禁止加入阻塞调用。现有 `BspMotor_EmergencyCoastAll()` 会关闭 PWM 定时器和输出通道，调用后必须系统复位；它只用于硬故障、显式 ESTOP 和已经锁存的关键任务故障。
+
+## G1.3 临时命令与遥测链路
+
+- UART4 使用 230400 baud、8N1。命令为大写 ASCII：`ARM <seq>`、`PWM <seq> <value>`、`STOP <seq>`、`ESTOP`、`STATUS`；LF 结束，可在 LF 前带一个 CR。LF 前最多保存 64 B，第 65 B 触发行溢出并丢弃到下一次 LF。
+- `ARM/PWM/STOP` 共用 32 位半区间单调序号。解析通过但命令队列已满时不提交序号，允许上位机用同一序号重试；只有成功入队才提交。格式错误、数值溢出、越界、旧序号和队列满都不会刷新 500 ms 电机命令超时。
+- `ESTOP` 不进入普通命令队列，直接进入既有任务级执行器仲裁区，锁存故障并调用 Emergency Coast；远程命令不能清除，遥测明确给出“必须系统复位”。`STATUS` 只请求状态帧，不采样 ADC、不改变运动状态。
+- UART TX 使用 `HAL_UART_Transmit_IT()`。单任务生产者与完成 ISR/任务恢复者通过 C11 原子三态串行化队首所有权；回调串接下一帧，队满、起发失败和完成恢复均计数，业务路径不调用阻塞发送。
+- 20 ms 遥测只使用整数格式化，覆盖主机时刻、控制节拍/硬件时间戳、编码器原始/增量/累计计数、MA 目标/实际 PWM、电池、心跳/运动禁止/锁存故障/电机状态/复位要求、IMU 数据年龄/健康等级、IRQ 抖动、唤醒延迟、最大 WCET、漏周期/截止期和通信故障计数。最坏 32/64 位边界下单帧不超过 384 B，并满足 230400 8N1 的 50 Hz 持续吞吐预算。
+- ADC 由 `commTask` 单独拥有，只按 20 ms 周期采样；`STATUS/ESTOP` 强制遥测复用最近电池快照。轮端分辨率未关闭前只报告计数，不换算伪精确 RPM。
 
 ## M2 确定性控制时基
 
@@ -55,7 +64,7 @@ CMSIS-RTOS2 的 `stack_size` 单位是字节。GCC 静态栈报告中，ESKF 最
 
 ## 后续安全落地顺序
 
-1. G1 先完成带序号和 500 ms 命令超时的临时 ASCII 试验协议，不加 CRC；M5 再完成正式二进制帧协议及 CRC。
+1. G1.3 已完成带序号和 500 ms 命令超时的临时 ASCII 试验协议软件，不加 CRC；板上收发与拥塞仍待验收，M5 再完成正式二进制帧协议及 CRC。
 2. G1.2 已实现 500 ms 命令超时：Control 将目标 PWM 归零并受控减速，停止后 Brake 并撤销使能；超时停车不能被新 PWM 或 STOP 取消，必须重新 ARM。严重内部故障直接 Emergency Coast。
 3. 实测所有任务栈余量、最大执行时间和调度抖动。
 4. CubeMX 启用 IWDG，建议约 1 s 窗口；仅 Safety 在所有关键心跳健康时喂狗。

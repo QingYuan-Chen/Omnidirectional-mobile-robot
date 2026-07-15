@@ -49,3 +49,41 @@ add_executable(test_app_safety_policy
 target_include_directories(test_app_safety_policy PRIVATE "${APP_DIR}/Inc")
 target_compile_options(test_app_safety_policy PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
 add_test(NAME app_safety_policy COMMAND test_app_safety_policy)
+
+add_executable(test_app_comm_protocol
+  test_app_comm_protocol.c
+  "${APP_DIR}/Src/app_comm_protocol.c"
+  "${APP_DIR}/Src/app_motor_open_loop.c"
+)
+target_include_directories(test_app_comm_protocol PRIVATE "${APP_DIR}/Inc")
+target_compile_options(test_app_comm_protocol PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME app_comm_protocol COMMAND test_app_comm_protocol)
+
+add_executable(test_app_telemetry
+  test_app_telemetry.c
+  "${APP_DIR}/Src/app_telemetry.c"
+)
+target_include_directories(test_app_telemetry PRIVATE "${APP_DIR}/Inc" "${APP_DIR}/Bsp/Inc")
+target_compile_options(test_app_telemetry PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME app_telemetry COMMAND test_app_telemetry)
+
+add_executable(test_bsp_uart_tx_queue
+  test_bsp_uart_tx_queue.c
+  "${APP_DIR}/Bsp/Src/bsp_uart_tx_queue.c"
+)
+target_include_directories(test_bsp_uart_tx_queue PRIVATE "${APP_DIR}/Inc" "${APP_DIR}/Bsp/Inc")
+target_compile_options(test_bsp_uart_tx_queue PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME bsp_uart_tx_queue COMMAND test_bsp_uart_tx_queue)
+
+add_executable(test_bsp_uart_async
+  test_bsp_uart_async.c
+  "${APP_DIR}/Bsp/Src/bsp_uart.c"
+  "${APP_DIR}/Bsp/Src/bsp_uart_tx_queue.c"
+)
+target_include_directories(test_bsp_uart_async PRIVATE
+  "${CMAKE_CURRENT_LIST_DIR}/stubs"
+  "${APP_DIR}/Inc"
+  "${APP_DIR}/Bsp/Inc"
+)
+target_compile_options(test_bsp_uart_async PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME bsp_uart_async COMMAND test_bsp_uart_async)
