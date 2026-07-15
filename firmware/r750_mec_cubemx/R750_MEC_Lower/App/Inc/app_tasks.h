@@ -3,6 +3,7 @@
 
 #include "app_control_timing.h"
 #include "app_imu.h"
+#include "app_motor_open_loop.h"
 #include "bsp_types.h"
 
 #ifdef __cplusplus
@@ -23,6 +24,7 @@ typedef struct {
   int16_t encoder_delta[BSP_MOTOR_COUNT];
   int64_t encoder_total[BSP_MOTOR_COUNT];
   AppControlTimingSnapshot control_timing;
+  AppMotorOpenLoopSnapshot motor_open_loop;
   AppImuOutput imu;
   uint16_t battery_millivolts;
   uint32_t health_miss_count;

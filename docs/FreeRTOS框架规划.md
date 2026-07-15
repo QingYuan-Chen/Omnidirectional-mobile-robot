@@ -4,7 +4,7 @@
 
 - CubeMX 只维护内核配置和 `defaultTask`，应用任务由 `App` 层维护，避免重新生成时覆盖业务框架。
 - `defaultTask` 是一次性启动任务。它完成 BSP 初始化、静止 IMU 标定并创建全部应用任务，运行态确认成功后自删除。
-- 控制任务是编码器和电机正常控制的唯一所有者。其他任务只能发布状态或请求停车。
+- 控制任务是编码器和电机正常控制的唯一所有者。安全任务只拥有普通 Coast 和 Emergency Coast 覆盖权，其他任务只能发布状态或请求停车。
 - 硬故障、断言、栈溢出和内存分配失败直接进入 Emergency Coast。
 - 通信超时采用受控停车；IWDG 用于处理调度器或关键任务失活，两者不能相互替代。
 
@@ -13,8 +13,8 @@
 | 任务 | 周期 | 优先级 | 初始栈 | 当前职责 |
 | --- | ---: | --- | ---: | --- |
 | `defaultTask` | 一次性 | Normal | 2048 B | BSP 初始化、IMU 静止标定、创建任务、就绪提示、自删除 |
-| `controlTask` | TIM7 候选 1 kHz | High | 1536 B | 等待硬件直接通知、消费四路编码器序号快照、记录时序诊断并保持安全制动 |
-| `safetyTask` | 100 ms | High | 1024 B | 检查关键心跳、锁存故障、触发 Emergency Coast |
+| `controlTask` | TIM7 候选 1 kHz | High | 1536 B | 等待硬件直接通知、消费四路编码器序号快照、记录时序诊断并推进 MA 安全开环状态机 |
+| `safetyTask` | 100 ms | High | 1024 B | 原子清点关键心跳、发布运动禁止、普通 Coast 覆盖、锁存故障并触发 Emergency Coast |
 | `commTask` | 5 ms | AboveNormal | 1536 B | UART 接收恢复，后续承接协议解析和遥测 |
 | `imuTask` | DRDY，10 ms 超时兜底 | AboveNormal | 1536 B | 同步读取 QMI8658A、校验时间戳、SI/机体系转换、6 状态 ESKF、发布有效性快照 |
 | `monitorTask` | 500 ms | Low | 1024 B | 电池电压、运行灯、任务剩余栈监测 |
@@ -30,10 +30,10 @@ CMSIS-RTOS2 的 `stack_size` 单位是字节。GCC 静态栈报告中，ESKF 最
 3. QMI8658A 在机器人静止时采集连续 400 个样本，检查加速度模长、角速度和各轴方差；标定失败不发成功提示音。
 4. 应用任务创建后先等待 `APP_EVENT_START`，避免部分任务在框架尚未创建完成时运行。
 5. 全部任务创建成功后统一放行。IMU 滤波器达到收敛条件且数据、时间戳、倾角均有效后，蜂鸣器响 0.5 s；随后 `defaultTask` 自删除并归还栈。
-6. Control、Comm、IMU 使用事件标志上报心跳；Safety 每 100 ms 清点一次，连续 3 个窗口缺失即锁存故障。普通可恢复 IMU 降级只置 `motion_inhibited` 并持续恢复，不永久锁存。
+6. Control、Comm、IMU 使用事件标志上报心跳；Safety 每 100 ms 用一次清除操作取得清除前事件位，避免读取与清除之间丢失新心跳。首次缺失触发普通 Coast，连续 3 个窗口缺失才锁存故障。普通可恢复 IMU 降级只置 `motion_inhibited` 并持续恢复，不永久锁存。
 7. 运行数据通过短临界区发布快照。高频数据不通过长队列复制，串口协议完成后再增加长度为 1 的最新速度命令邮箱和独立 TX 队列。
 
-可恢复 IMU 降级或尚未达到锁存门槛的心跳缺失只发布运动禁止请求，由 `controlTask` 执行受控停车或普通 Coast。现有 `BspMotor_EmergencyCoastAll()` 会关闭 PWM 定时器和输出通道，调用后必须系统复位；它只用于硬故障、显式 ESTOP 和已经锁存的关键任务故障。
+可恢复 IMU 降级或尚未达到锁存门槛的心跳缺失发布运动禁止，并由 `safetyTask` 先执行普通 Coast 覆盖。Control 的最终门复核与 PWM 提交、Safety 的门状态发布与 Coast/Emergency 位于同一种短任务级仲裁区；该区域不屏蔽 TIM7 ISR，且禁止加入阻塞调用。现有 `BspMotor_EmergencyCoastAll()` 会关闭 PWM 定时器和输出通道，调用后必须系统复位；它只用于硬故障、显式 ESTOP 和已经锁存的关键任务故障。
 
 ## M2 确定性控制时基
 
@@ -56,7 +56,7 @@ CMSIS-RTOS2 的 `stack_size` 单位是字节。GCC 静态栈报告中，ESKF 最
 ## 后续安全落地顺序
 
 1. G1 先完成带序号和 500 ms 命令超时的临时 ASCII 试验协议，不加 CRC；M5 再完成正式二进制帧协议及 CRC。
-2. 命令超时时由 Control 将目标速度归零并受控减速，停止后 Brake；严重内部故障直接 Coast。
+2. G1.2 已实现 500 ms 命令超时：Control 将目标 PWM 归零并受控减速，停止后 Brake 并撤销使能；超时停车不能被新 PWM 或 STOP 取消，必须重新 ARM。严重内部故障直接 Emergency Coast。
 3. 实测所有任务栈余量、最大执行时间和调度抖动。
 4. CubeMX 启用 IWDG，建议约 1 s 窗口；仅 Safety 在所有关键心跳健康时喂狗。
 5. UART 接收从逐字节中断升级为 DMA + IDLE，降低 230400 波特率下的中断负担。

@@ -45,6 +45,9 @@
 #define ROBOT_CONFIG_HEALTH_MISS_LIMIT             (3U)
 
 #define ROBOT_CONFIG_PWM_LIMIT                    (4200)
+#define ROBOT_CONFIG_MA_OPEN_LOOP_PWM_LIMIT       (840)
+#define ROBOT_CONFIG_MA_PWM_RAMP_COUNTS_PER_MS    (1U)
+#define ROBOT_CONFIG_MA_REVERSE_BRAKE_TICKS       (1U)
 #define ROBOT_CONFIG_BATTERY_DIVIDER_RATIO        (11.0f)
 #define ROBOT_CONFIG_ADC_VREF_MV                  (3300U)
 #define ROBOT_CONFIG_ADC_MAX_RAW                  (4095U)

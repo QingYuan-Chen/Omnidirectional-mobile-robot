@@ -49,6 +49,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/app_control_tick_buffer.c
     App/Src/app_control_timing.c
     App/Src/app_encoder_accumulator.c
+    App/Src/app_motor_open_loop.c
+    App/Src/app_safety_policy.c
     App/Src/app_imu.c
     App/Src/app_tasks.c
     App/Src/imu_eskf.c

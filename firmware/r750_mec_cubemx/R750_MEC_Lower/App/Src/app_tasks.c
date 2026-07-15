@@ -5,6 +5,8 @@
 #include "app_control_timing.h"
 #include "app_encoder_accumulator.h"
 #include "app_imu.h"
+#include "app_motor_open_loop.h"
+#include "app_safety_policy.h"
 #include "bsp_adc.h"
 #include "bsp_encoder.h"
 #include "bsp_motor.h"
@@ -45,6 +47,11 @@ static void AppTasks_Safety(void *argument);
 static void AppTasks_Comm(void *argument);
 static void AppTasks_Imu(void *argument);
 static void AppTasks_Monitor(void *argument);
+static BspStatus AppTasks_ApplyMotorOutput(const AppMotorOpenLoopOutput *output);
+static BspStatus AppTasks_CommitControlMotorOutput(
+  AppMotorOpenLoop *controller,
+  uint32_t now_ms,
+  const AppMotorOpenLoopRequest *request);
 
 static const osThreadAttr_t task_attributes[APP_TASK_COUNT] = {
   [APP_TASK_CONTROL] = {.name = "controlTask", .stack_size = APP_CONTROL_STACK_BYTES, .priority = osPriorityHigh},
@@ -85,10 +92,84 @@ static void AppTasks_StopCreatedThreads(void)
 
 static _Noreturn void AppTasks_FailCurrentThread(void)
 {
+  taskENTER_CRITICAL();
+  runtime_snapshot.motion_inhibited = true;
+  runtime_snapshot.fault_latched = true;
+  taskEXIT_CRITICAL();
   (void)AppControlTimebase_Stop();
   BspMotor_EmergencyCoastAll();
   osThreadExit();
   for (;;) {
+  }
+}
+
+static BspStatus AppTasks_CommitControlMotorOutput(
+  AppMotorOpenLoop *controller,
+  uint32_t now_ms,
+  const AppMotorOpenLoopRequest *request)
+{
+  if (controller == NULL || request == NULL) {
+    return BSP_INVALID_ARG;
+  }
+
+  AppMotorOpenLoopOutput output;
+  AppMotorOpenLoopSnapshot snapshot;
+  BspStatus status = BSP_OK;
+
+  /*
+   * 任务级执行器仲裁区：不中断 TIM7 ISR，只阻止 controlTask 与 safetyTask
+   * 在“最终安全门复核—PWM 提交”之间互相切换。区域内不得加入阻塞调用。
+   */
+  vTaskSuspendAll();
+  const bool motion_inhibited = runtime_snapshot.motion_inhibited;
+  const bool fault_latched = runtime_snapshot.fault_latched;
+  if (!AppMotorOpenLoop_Step(
+        controller,
+        now_ms,
+        motion_inhibited,
+        fault_latched,
+        request,
+        &output) ||
+      !AppMotorOpenLoop_GetSnapshot(controller, &snapshot)) {
+    status = BSP_ERROR;
+  } else {
+    status = AppTasks_ApplyMotorOutput(&output);
+    if (status == BSP_OK) {
+      runtime_snapshot.motor_open_loop = snapshot;
+    }
+  }
+  (void)xTaskResumeAll();
+  return status;
+}
+
+static BspStatus AppTasks_ApplyMotorOutput(const AppMotorOpenLoopOutput *output)
+{
+  if (output == NULL) {
+    return BSP_INVALID_ARG;
+  }
+  if (output->emergency_coast_request) {
+    BspMotor_EmergencyCoastAll();
+    return BSP_OK;
+  }
+  if (output->mode == APP_MOTOR_OUTPUT_NONE) {
+    return BSP_OK;
+  }
+
+  BspMotor_Coast(BSP_MOTOR_MB);
+  BspMotor_Coast(BSP_MOTOR_MC);
+  BspMotor_Coast(BSP_MOTOR_MD);
+  switch (output->mode) {
+    case APP_MOTOR_OUTPUT_BRAKE:
+      BspMotor_Brake(BSP_MOTOR_MA);
+      return BSP_OK;
+    case APP_MOTOR_OUTPUT_COAST:
+      BspMotor_Coast(BSP_MOTOR_MA);
+      return BSP_OK;
+    case APP_MOTOR_OUTPUT_DRIVE:
+      return BspMotor_SetPwm(BSP_MOTOR_MA, output->pwm);
+    case APP_MOTOR_OUTPUT_NONE:
+    default:
+      return BSP_ERROR;
   }
 }
 
@@ -100,6 +181,7 @@ BspStatus AppTasks_Create(void)
 
   memset(task_handles, 0, sizeof(task_handles));
   memset(&runtime_snapshot, 0, sizeof(runtime_snapshot));
+  runtime_snapshot.motion_inhibited = true;
 
   runtime_events = osEventFlagsNew(NULL);
   if (runtime_events == NULL) {
@@ -141,7 +223,19 @@ static void AppTasks_Control(void *argument)
     AppTasks_FailCurrentThread();
   }
 
-  BspMotor_BrakeAll();
+  const uint32_t motor_started_at_ms = HAL_GetTick();
+  AppMotorOpenLoop motor_open_loop;
+  AppMotorOpenLoop_Init(&motor_open_loop, motor_started_at_ms);
+  const AppMotorOpenLoopRequest no_motor_request = {
+    .type = APP_MOTOR_REQUEST_NONE,
+    .sequence = 0U,
+    .pwm = 0,
+  };
+  if (AppTasks_CommitControlMotorOutput(
+        &motor_open_loop, motor_started_at_ms, &no_motor_request) != BSP_OK) {
+    AppTasks_FailCurrentThread();
+  }
+
   uint16_t initial_encoder_raw[BSP_MOTOR_COUNT];
   for (uint32_t i = 0U; i < (uint32_t)BSP_MOTOR_COUNT; ++i) {
     initial_encoder_raw[i] = BspEncoder_ReadRaw((BspMotorId)i);
@@ -197,11 +291,11 @@ static void AppTasks_Control(void *argument)
     memcpy(runtime_snapshot.encoder_raw, tick.encoder_raw, sizeof(tick.encoder_raw));
     memcpy(runtime_snapshot.encoder_delta, encoder_delta, sizeof(encoder_delta));
     memcpy(runtime_snapshot.encoder_total, encoder_total, sizeof(encoder_total));
-    const bool fault_latched = runtime_snapshot.fault_latched;
     taskEXIT_CRITICAL();
 
-    if (!fault_latched) {
-      BspMotor_BrakeAll();
+    if (AppTasks_CommitControlMotorOutput(
+          &motor_open_loop, HAL_GetTick(), &no_motor_request) != BSP_OK) {
+      AppTasks_FailCurrentThread();
     }
 
     heartbeat_divider++;
@@ -222,39 +316,42 @@ static void AppTasks_Safety(void *argument)
   }
 
   TickType_t last_wake = xTaskGetTickCount();
+  AppSafetyPolicy safety_policy;
+  AppSafetyPolicy_Init(&safety_policy);
   vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(ROBOT_CONFIG_SAFETY_PERIOD_MS));
 
   for (;;) {
-    const uint32_t flags = osEventFlagsGet(runtime_events);
+    const uint32_t flags = osEventFlagsClear(
+      runtime_events, APP_EVENT_CRITICAL_HEARTBEATS);
     const bool tasks_healthy = (flags & osFlagsError) == 0U &&
                                (flags & APP_EVENT_CRITICAL_HEARTBEATS) == APP_EVENT_CRITICAL_HEARTBEATS;
-    (void)osEventFlagsClear(runtime_events, APP_EVENT_CRITICAL_HEARTBEATS);
 
-    bool stop_motion = false;
-    taskENTER_CRITICAL();
+    AppSafetyPolicyOutput safety_output;
+    bool policy_updated;
+    vTaskSuspendAll();
     const bool imu_healthy = runtime_snapshot.imu.health == APP_IMU_HEALTH_HEALTHY;
-    runtime_snapshot.critical_tasks_alive = tasks_healthy;
-    if (tasks_healthy) {
-      runtime_snapshot.health_miss_count = 0U;
-    } else if (runtime_snapshot.health_miss_count < UINT32_MAX) {
-      runtime_snapshot.health_miss_count++;
-    }
+    policy_updated = AppSafetyPolicy_Update(
+      &safety_policy,
+      tasks_healthy,
+      imu_healthy,
+      runtime_snapshot.fault_latched,
+      ROBOT_CONFIG_HEALTH_MISS_LIMIT,
+      &safety_output);
+    if (policy_updated) {
+      runtime_snapshot.critical_tasks_alive = tasks_healthy;
+      runtime_snapshot.health_miss_count = safety_policy.critical_heartbeat_miss_count;
+      runtime_snapshot.motion_inhibited = safety_policy.motion_inhibited;
+      runtime_snapshot.fault_latched = safety_policy.fault_latched;
 
-    const bool inhibit_motion = runtime_snapshot.fault_latched || !tasks_healthy || !imu_healthy;
-    if (inhibit_motion && !runtime_snapshot.motion_inhibited) {
-      stop_motion = true;
+      if (safety_output.emergency_coast_request) {
+        BspMotor_EmergencyCoastAll();
+      } else if (safety_output.normal_coast_request) {
+        BspMotor_CoastAll();
+      }
     }
-    runtime_snapshot.motion_inhibited = inhibit_motion;
-
-    if (!runtime_snapshot.fault_latched &&
-        runtime_snapshot.health_miss_count >= ROBOT_CONFIG_HEALTH_MISS_LIMIT) {
-      runtime_snapshot.fault_latched = true;
-      stop_motion = true;
-    }
-    taskEXIT_CRITICAL();
-
-    if (stop_motion) {
-      BspMotor_EmergencyCoastAll();
+    (void)xTaskResumeAll();
+    if (!policy_updated) {
+      AppTasks_FailCurrentThread();
     }
 
     vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(ROBOT_CONFIG_SAFETY_PERIOD_MS));

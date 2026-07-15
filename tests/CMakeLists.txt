@@ -33,3 +33,19 @@ add_executable(test_app_control_tick_buffer
 target_include_directories(test_app_control_tick_buffer PRIVATE "${APP_DIR}/Inc" "${APP_DIR}/Bsp/Inc")
 target_compile_options(test_app_control_tick_buffer PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
 add_test(NAME app_control_tick_buffer COMMAND test_app_control_tick_buffer)
+
+add_executable(test_app_motor_open_loop
+  test_app_motor_open_loop.c
+  "${APP_DIR}/Src/app_motor_open_loop.c"
+)
+target_include_directories(test_app_motor_open_loop PRIVATE "${APP_DIR}/Inc")
+target_compile_options(test_app_motor_open_loop PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME app_motor_open_loop COMMAND test_app_motor_open_loop)
+
+add_executable(test_app_safety_policy
+  test_app_safety_policy.c
+  "${APP_DIR}/Src/app_safety_policy.c"
+)
+target_include_directories(test_app_safety_policy PRIVATE "${APP_DIR}/Inc")
+target_compile_options(test_app_safety_policy PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME app_safety_policy COMMAND test_app_safety_policy)
