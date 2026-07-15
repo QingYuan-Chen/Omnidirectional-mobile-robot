@@ -19,4 +19,4 @@ void BspMotor_EmergencyCoastAll(void);
 }
 #endif
 
-#endif /* BSP_MOTOR_H */
+#endif

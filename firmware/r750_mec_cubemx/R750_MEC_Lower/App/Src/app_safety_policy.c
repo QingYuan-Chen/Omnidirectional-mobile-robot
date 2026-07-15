@@ -35,11 +35,13 @@ bool AppSafetyPolicy_Update(
 
   const bool critical_fault =
     policy->critical_heartbeat_miss_count >= critical_miss_limit;
+  /* 达到连续缺失门槛或已有外部硬故障才永久锁存；单次缺失只做可恢复禁止。 */
   if (!policy->fault_latched && (external_fault_latched || critical_fault)) {
     policy->fault_latched = true;
     output->emergency_coast_request = true;
   }
 
+  /* IMU 非健康不会单独触发破坏性急停，但会持续禁止运动直到稳定恢复。 */
   policy->motion_inhibited =
     policy->fault_latched || !critical_tasks_healthy || !imu_healthy;
   output->normal_coast_request =

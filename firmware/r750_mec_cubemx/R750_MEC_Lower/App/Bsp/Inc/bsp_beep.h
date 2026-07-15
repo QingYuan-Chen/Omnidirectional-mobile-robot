@@ -15,4 +15,4 @@ void BspBeep_Toggle(void);
 }
 #endif
 
-#endif /* BSP_BEEP_H */
+#endif

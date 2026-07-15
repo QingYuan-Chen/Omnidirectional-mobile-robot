@@ -46,6 +46,7 @@ BspStatus BspAdc_ReadBatteryMillivolts(uint16_t *millivolts)
     return status;
   }
 
+  /* 使用整数完成分压与基准电压换算，结果供周期遥测和后续标定使用。 */
   const uint32_t scaled_mv =
     ((uint32_t)raw * ROBOT_CONFIG_ADC_VREF_MV * ROBOT_CONFIG_BATTERY_DIVIDER_NUM) /
     (ROBOT_CONFIG_ADC_MAX_RAW * ROBOT_CONFIG_BATTERY_DIVIDER_DEN);

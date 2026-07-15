@@ -15,4 +15,4 @@ BspStatus BspAdc_ReadBatteryMillivolts(uint16_t *millivolts);
 }
 #endif
 
-#endif /* BSP_ADC_H */
+#endif

@@ -26,4 +26,4 @@ BspStatus Bsp_GetInitStatus(void);
 }
 #endif
 
-#endif /* BSP_H */
+#endif

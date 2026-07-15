@@ -44,4 +44,4 @@ HAL_StatusTypeDef HAL_UART_Transmit_IT(
   uint16_t length);
 HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *handle);
 
-#endif /* TEST_STUB_USART_H */
+#endif

@@ -90,6 +90,7 @@ static osThreadFunc_t const task_functions[APP_TASK_COUNT] = {
 
 static bool AppTasks_WaitForStart(void)
 {
+  /* 所有任务创建成功后统一放行，避免部分任务先运行而依赖对象尚未就绪。 */
   const uint32_t flags = osEventFlagsWait(runtime_events, APP_EVENT_START, osFlagsWaitAny | osFlagsNoClear, osWaitForever);
   return (flags & osFlagsError) == 0U;
 }
@@ -201,6 +202,7 @@ static bool AppTasks_QueueMotorCommand(
       communication->command_queue_drop_count, 1U);
     return false;
   }
+  /* 两阶段提交：只有队列真正接收命令后才推进协议序号，队满可原序号重试。 */
   if (!AppCommProtocol_CommitSequence(protocol, command)) {
     AppTasks_FailCurrentThread();
   }
@@ -252,7 +254,7 @@ static BspStatus AppTasks_CommitControlMotorOutput(
   BspStatus status = BSP_OK;
 
   /*
-   * 任务级执行器仲裁区：不中断 TIM7 ISR，只阻止 controlTask 与 safetyTask
+   * 任务级执行器仲裁区：不中断 TIM7 ISR，只阻止控制任务与安全任务
    * 在“最终安全门复核—PWM 提交”之间互相切换。区域内不得加入阻塞调用。
    */
   vTaskSuspendAll();
@@ -290,6 +292,7 @@ static BspStatus AppTasks_ApplyMotorOutput(const AppMotorOpenLoopOutput *output)
     return BSP_OK;
   }
 
+  /* G1 单电机阶段只允许 MA 输出，其余三路每个周期都重新强制为空转。 */
   BspMotor_Coast(BSP_MOTOR_MB);
   BspMotor_Coast(BSP_MOTOR_MC);
   BspMotor_Coast(BSP_MOTOR_MD);
@@ -437,6 +440,7 @@ static void AppTasks_Control(void *argument)
     memcpy(runtime_snapshot.encoder_total, encoder_total, sizeof(encoder_total));
     taskEXIT_CRITICAL();
 
+    /* 每个 TIM7 节拍最多消费一条命令，命令洪泛不能无限拉长控制周期。 */
     AppMotorOpenLoopRequest motor_request = no_motor_request;
     const osStatus_t command_status = osMessageQueueGet(
       motor_command_queue, &motor_request, NULL, 0U);
@@ -471,6 +475,7 @@ static void AppTasks_Safety(void *argument)
   vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(ROBOT_CONFIG_SAFETY_PERIOD_MS));
 
   for (;;) {
+    /* 一次清除同时取得清除前位值，避免先读后清期间到达的新心跳被误删。 */
     const uint32_t flags = osEventFlagsClear(
       runtime_events, APP_EVENT_CRITICAL_HEARTBEATS);
     const bool tasks_healthy = (flags & osFlagsError) == 0U &&
@@ -538,6 +543,7 @@ static void AppTasks_Comm(void *argument)
         continue;
       }
       if (command.type == APP_COMM_COMMAND_ESTOP) {
+        /* 急停绕过普通有序队列，立即进入复位恢复型故障锁存。 */
         communication.estop_command_count = AppTasks_AddSaturated(
           communication.estop_command_count, 1U);
         AppTasks_LatchCommEstop();
@@ -554,6 +560,7 @@ static void AppTasks_Comm(void *argument)
     const bool periodic_telemetry_due =
       (now_ms - last_telemetry_ms) >= ROBOT_CONFIG_TELEMETRY_PERIOD_MS;
     if (periodic_telemetry_due) {
+      /* ADC 只随 20 ms 周期遥测采样，强制状态上报复用最近一次电压快照。 */
       last_telemetry_ms = now_ms;
       uint16_t battery_millivolts = 0U;
       const BspStatus battery_status = BspAdc_ReadBatteryMillivolts(
@@ -626,6 +633,7 @@ static void AppTasks_Imu(void *argument)
     runtime_snapshot.imu = output;
     taskEXIT_CRITICAL();
 
+    /* 读取失败或处于非阻塞退避都仍上报任务心跳，健康等级由 IMU 输出单独表达。 */
     (void)osEventFlagsSet(runtime_events, APP_EVENT_IMU_HEARTBEAT);
     (void)status;
   }

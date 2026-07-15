@@ -43,6 +43,7 @@ static bool AppImu_TickIsBefore(uint32_t now_ms, uint32_t target_ms)
 
 static void AppImu_StartBackoff(uint32_t now_ms)
 {
+  /* 只记录下次允许访问的时刻，不阻塞 IMU 任务，因此退避期间仍能上报心跳。 */
   const uint32_t delay_ms = app_imu_backoff_ms[backoff_index];
   imu_output.retry_delay_ms = delay_ms;
   imu_output.next_retry_tick_ms = now_ms + delay_ms;
@@ -99,6 +100,7 @@ static void AppImu_UpdateRecovery(bool timestamp_continuous)
     return;
   }
 
+  /* 必须连续获得时间戳连续且估计器有限的稳定样本，单次成功不能立即恢复健康。 */
   if (timestamp_continuous && ImuEskf_IsStateFinite(&imu_filter)) {
     imu_output.stable_sample_count = AppImu_SaturatingIncrement(imu_output.stable_sample_count);
   } else {
@@ -130,6 +132,7 @@ static uint32_t AppImu_SaturatingAdd(uint32_t value, uint32_t increment)
 
 static bool AppImu_IsSpike(const float acceleration_mps2[3], const float angular_rate_rad_s[3])
 {
+  /* 突变判据作用于未经普通低通的物理量，异常样本不会进入 ESKF。 */
   float acceleration_delta[3];
   float angular_rate_delta[3];
   for (uint32_t axis = 0U; axis < 3U; ++axis) {
@@ -145,6 +148,7 @@ static void AppImu_UpdateFilteredOutput(const float acceleration_mps2[3],
                                         const float angular_rate_rad_s[3],
                                         float delta_time_s)
 {
+  /* 该低通仅形成独立对外输出，ESKF 始终使用本次原始换算值。 */
   const float time_constant_s = 1.0f / (2.0f * APP_IMU_PI * ROBOT_CONFIG_IMU_OUTPUT_FILTER_CUTOFF_HZ);
   const float alpha = delta_time_s / (time_constant_s + delta_time_s);
   for (uint32_t axis = 0U; axis < 3U; ++axis) {
@@ -334,6 +338,7 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
   }
 
   if (imu_output.retry_delay_ms != 0U && AppImu_TickIsBefore(now_ms, imu_output.next_retry_tick_ms)) {
+    /* 退避窗口只更新样本年龄和健康输出，不访问总线也不挂起任务。 */
     AppImu_UpdateStaleState(now_ms);
     *output = imu_output;
     return BSP_BUSY;
@@ -367,6 +372,7 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
   }
 
   if (timestamp_step > APP_IMU_MAX_TIMESTAMP_STEP) {
+    /* 过大的时间戳跳变视为数据链故障，不再使用特殊数值伪装成普通丢样。 */
     previous_sensor_timestamp = sample.sensor_timestamp;
     imu_output.dropped_sample_count = AppImu_SaturatingAdd(imu_output.dropped_sample_count, timestamp_step - 1U);
     imu_output.flags |= APP_IMU_FLAG_DATA_STALE;
@@ -391,6 +397,7 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
   if (AppImu_IsSpike(acceleration_mps2, angular_rate_rad_s)) {
     imu_output.spike_reject_count = AppImu_SaturatingIncrement(imu_output.spike_reject_count);
     imu_output.consecutive_spike_count = AppImu_SaturatingIncrement(imu_output.consecutive_spike_count);
+    /* 更新比较基线，避免同一个孤立尖峰让下一帧再次产生反向大差值。 */
     memcpy(previous_acceleration_mps2, acceleration_mps2, sizeof(previous_acceleration_mps2));
     memcpy(previous_angular_rate_rad_s, angular_rate_rad_s, sizeof(previous_angular_rate_rad_s));
     imu_output.flags |= APP_IMU_FLAG_SAMPLE_SPIKE;
@@ -407,6 +414,7 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
 
   bool accel_update_used = false;
   bool vibration_high = false;
+  /* 姿态估计直接使用原始换算值，独立低通输出在估计成功后另行更新。 */
   if (!ImuEskf_Update(
         &imu_filter, angular_rate_rad_s, acceleration_mps2, delta_time_s, &accel_update_used, &vibration_high)) {
     AppImu_MarkEstimatorFailure(acceleration_mps2);

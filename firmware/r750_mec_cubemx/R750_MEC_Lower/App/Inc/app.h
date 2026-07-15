@@ -11,4 +11,4 @@ void App_DefaultTask(void *argument);
 }
 #endif
 
-#endif /* APP_H */
+#endif

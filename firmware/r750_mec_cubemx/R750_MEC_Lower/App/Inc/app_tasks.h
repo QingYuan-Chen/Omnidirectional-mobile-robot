@@ -55,4 +55,4 @@ BspStatus AppTasks_GetSnapshot(AppRuntimeSnapshot *snapshot);
 }
 #endif
 
-#endif /* APP_TASKS_H */
+#endif

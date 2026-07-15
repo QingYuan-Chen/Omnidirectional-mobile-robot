@@ -4,6 +4,8 @@
 #include "bsp_imu.h"
 #include "bsp_types.h"
 
+/* 原始物理量、独立低通输出和姿态估计结果分别保存，低通结果不回灌 ESKF。 */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -75,4 +77,4 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output);
 }
 #endif
 
-#endif /* APP_IMU_H */
+#endif

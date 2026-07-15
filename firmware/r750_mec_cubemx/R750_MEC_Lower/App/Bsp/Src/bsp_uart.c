@@ -35,6 +35,7 @@ typedef struct {
   _Atomic uint32_t tx_state;
 } BspUartContext;
 
+/* 上下文由任务和中断共同访问，共享索引、统计量和发送所有权均使用原子变量。 */
 static BspUartContext uart_contexts[BSP_UART_COUNT];
 
 static bool BspUart_IsValid(BspUartPort port)
@@ -165,12 +166,14 @@ static void BspUart_PushByte(BspUartContext *context, uint8_t byte)
     return;
   }
 
+  /* 先写数据再发布新队首，任务侧取得队首后才能读取完整字节。 */
   context->rx_buffer[head] = byte;
   atomic_store_explicit(&context->head, next_head, memory_order_release);
 }
 
 static BspStatus BspUart_StartNextTransmit(BspUartContext *context)
 {
+  /* 必须先取得发送所有权再读取队首，防止立即完成回调弹出后仍使用旧帧指针。 */
   uint32_t expected_state = BSP_UART_TX_STATE_IDLE;
   if (!atomic_compare_exchange_strong_explicit(
         &context->tx_state,
@@ -195,11 +198,13 @@ static BspStatus BspUart_StartNextTransmit(BspUartContext *context)
     return BSP_OK;
   }
   if (hal_status == HAL_BUSY) {
+    /* 外设忙时保留队首并释放所有权，交给后续服务周期重试。 */
     atomic_store_explicit(
       &context->tx_state, BSP_UART_TX_STATE_IDLE, memory_order_release);
     return BSP_BUSY;
   }
 
+  /* 不可重试的起发错误丢弃当前帧并计数，避免坏帧永久堵住队列。 */
   BspUart_IncrementSaturated(&context->tx_start_failure_count);
   (void)BspUartTxQueue_Pop(&context->tx_queue);
   atomic_store_explicit(
@@ -209,6 +214,7 @@ static BspStatus BspUart_StartNextTransmit(BspUartContext *context)
 
 static void BspUart_ServiceTransmit(BspUartContext *context)
 {
+  /* HAL 已空闲但完成回调缺失时，由任务恢复路径独占弹出并继续发送。 */
   uint32_t expected_state = BSP_UART_TX_STATE_ACTIVE;
   if (context->handle->gState == HAL_UART_STATE_READY &&
       atomic_compare_exchange_strong_explicit(
@@ -377,6 +383,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
   for (uint32_t i = 0U; i < (uint32_t)BSP_UART_COUNT; ++i) {
     BspUartContext *context = &uart_contexts[i];
     if (context->handle == huart) {
+      /* 完成中断和任务恢复路径竞争同一三态所有权，只有胜者可以弹出队首。 */
       uint32_t expected_state = BSP_UART_TX_STATE_ACTIVE;
       if (!atomic_compare_exchange_strong_explicit(
             &context->tx_state,

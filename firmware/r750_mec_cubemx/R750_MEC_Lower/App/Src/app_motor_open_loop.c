@@ -25,6 +25,7 @@ static uint32_t AppMotorOpenLoop_AddSaturated(uint32_t value, uint32_t increment
 
 static bool AppMotorOpenLoop_SequenceIsNewer(uint32_t sequence, uint32_t previous)
 {
+  /* 与协议层使用相同的半区间规则，保证序号回绕时两层判断一致。 */
   const uint32_t difference = sequence - previous;
   return difference != 0U && difference <= (uint32_t)INT32_MAX;
 }
@@ -83,6 +84,7 @@ static void AppMotorOpenLoop_LatchEstop(
     return;
   }
 
+  /* 急停是复位恢复型状态，不允许后续普通命令在本次运行中解除。 */
   controller->snapshot.state = APP_MOTOR_OPEN_LOOP_ESTOP_LATCHED;
   controller->snapshot.target_pwm = 0;
   controller->snapshot.applied_pwm = 0;
@@ -155,6 +157,7 @@ bool AppMotorOpenLoop_Step(
       controller->snapshot.inhibit_transition_count = AppMotorOpenLoop_AddSaturated(
         controller->snapshot.inhibit_transition_count, 1U);
     }
+    /* 可恢复禁止也清除旧序号，使恢复后必须重新 ARM，不能沿用旧运行上下文。 */
     controller->snapshot.state = APP_MOTOR_OPEN_LOOP_INHIBITED;
     controller->snapshot.target_pwm = 0;
     controller->snapshot.applied_pwm = 0;
@@ -174,6 +177,7 @@ bool AppMotorOpenLoop_Step(
   if (request_type == APP_MOTOR_REQUEST_ARM ||
       request_type == APP_MOTOR_REQUEST_SET_PWM ||
       request_type == APP_MOTOR_REQUEST_STOP) {
+    /* 合法新序号先被状态机消费，即使当前状态拒绝其语义也不能再次重放。 */
     if (controller->snapshot.has_sequence &&
         !AppMotorOpenLoop_SequenceIsNewer(
           request->sequence, controller->snapshot.last_sequence)) {
@@ -245,6 +249,7 @@ bool AppMotorOpenLoop_Step(
   if (!command_refreshed && !controller->timeout_active &&
       AppMotorOpenLoop_RequiresCommandRefresh(controller->snapshot.state) &&
       (now_ms - controller->last_valid_command_ms) >= ROBOT_CONFIG_CMD_TIMEOUT_MS) {
+    /* 超时停车不可被新 PWM 或 STOP 取消，停稳并撤销使能后才能重新 ARM。 */
     controller->snapshot.command_timeout_count = AppMotorOpenLoop_AddSaturated(
       controller->snapshot.command_timeout_count, 1U);
     controller->snapshot.target_pwm = 0;
@@ -266,6 +271,7 @@ bool AppMotorOpenLoop_Step(
     }
     controller->snapshot.state = APP_MOTOR_OPEN_LOOP_RUNNING;
   } else if (reversing) {
+    /* 反向目标先按斜坡降到零，再保持规定的制动周期，禁止跨零直接换向。 */
     controller->snapshot.applied_pwm = AppMotorOpenLoop_MoveToward(
       controller->snapshot.applied_pwm, 0, ramp_capacity);
     if (controller->snapshot.applied_pwm == 0) {

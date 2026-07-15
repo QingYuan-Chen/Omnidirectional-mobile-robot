@@ -40,6 +40,7 @@ static void AppTelemetry_AppendLiteral(
 
 static void AppTelemetry_AppendU64(AppTelemetryWriter *writer, uint64_t value)
 {
+  /* 手工整数转换使帧长和执行路径可界定，不引入格式化库及浮点支持。 */
   uint8_t digits[20];
   uint16_t count = 0U;
   do {
@@ -123,6 +124,7 @@ bool AppTelemetry_Format(
     .valid = true,
   };
 
+  /* 标签顺序固定，树莓派端可按字段组解析并检查帧预算。 */
   AppTelemetry_AppendLiteral(&writer, "T,");
   AppTelemetry_AppendU32(&writer, input->now_ms);
   AppTelemetry_AppendByte(&writer, (uint8_t)',');

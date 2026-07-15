@@ -64,4 +64,4 @@ bool AppControlTiming_GetSnapshot(const AppControlTiming *timing, AppControlTimi
 }
 #endif
 
-#endif /* APP_CONTROL_TIMING_H */
+#endif

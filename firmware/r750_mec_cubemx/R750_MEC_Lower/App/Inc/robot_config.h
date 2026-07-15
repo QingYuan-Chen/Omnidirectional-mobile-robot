@@ -68,4 +68,4 @@ typedef enum {
   ROBOT_STATUS_FAULT = 3
 } RobotStatus;
 
-#endif /* ROBOT_CONFIG_H */
+#endif

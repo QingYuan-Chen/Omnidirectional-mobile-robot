@@ -37,6 +37,7 @@ bool AppEncoderAccumulator_Update(
   }
 
   for (uint32_t i = 0U; i < (uint32_t)BSP_MOTOR_COUNT; ++i) {
+    /* 先在 16 位无符号域相减，再解释为有符号增量，可自然处理计数器回绕。 */
     const uint16_t difference = (uint16_t)(raw_count[i] - state->previous_raw[i]);
     const int32_t signed_difference = difference <= (uint16_t)INT16_MAX
                                         ? (int32_t)difference

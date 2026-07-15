@@ -34,6 +34,7 @@ static uint16_t AppCommProtocol_Tokenize(
   uint16_t length,
   AppCommToken tokens[4])
 {
+  /* 只接受单个空格分隔的有限字段，避免隐式兼容制表符等控制字符。 */
   uint16_t position = 0U;
   uint16_t count = 0U;
   while (position < length) {
@@ -122,6 +123,7 @@ static bool AppCommProtocol_ParseI32(const AppCommToken *token, int32_t *value)
 
 static bool AppCommProtocol_SequenceIsNewer(uint32_t sequence, uint32_t previous)
 {
+  /* 半区间比较同时支持 uint32_t 回绕，并拒绝重复值和跨越半空间的旧值。 */
   const uint32_t difference = sequence - previous;
   return difference != 0U && difference <= (uint32_t)INT32_MAX;
 }
@@ -241,6 +243,7 @@ AppCommFeedResult AppCommProtocol_FeedByte(
     return result;
   }
   if (protocol->discarding_line) {
+    /* 行溢出或非法字符后丢弃到下一次换行，避免残片被解释成新命令。 */
     return APP_COMM_FEED_NONE;
   }
   if (byte != (uint8_t)'\r' && (byte < 0x20U || byte > 0x7EU)) {
@@ -277,6 +280,7 @@ bool AppCommProtocol_CommitSequence(
         command->sequence, protocol->last_sequence)) {
     return false;
   }
+  /* 调用者仅在有序命令队列入队成功后执行此提交，队满时允许同序号重试。 */
   protocol->last_sequence = command->sequence;
   protocol->has_sequence = true;
   return true;

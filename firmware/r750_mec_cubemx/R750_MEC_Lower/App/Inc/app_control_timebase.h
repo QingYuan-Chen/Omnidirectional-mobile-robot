@@ -5,6 +5,8 @@
 
 #include <stdint.h>
 
+/* TIM7 中断只采集时间戳和编码器快照，控制计算始终留在任务上下文。 */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -30,4 +32,4 @@ void AppControlTimebase_OnTimerElapsedFromIsr(void);
 }
 #endif
 
-#endif /* APP_CONTROL_TIMEBASE_H */
+#endif

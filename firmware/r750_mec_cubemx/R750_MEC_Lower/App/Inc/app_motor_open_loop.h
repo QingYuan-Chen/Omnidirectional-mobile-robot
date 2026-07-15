@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* 单电机试验状态机统一实现显式使能、斜坡、反转过零、超时停车和急停锁存。 */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -83,4 +85,4 @@ bool AppMotorOpenLoop_GetSnapshot(
 }
 #endif
 
-#endif /* APP_MOTOR_OPEN_LOOP_H */
+#endif

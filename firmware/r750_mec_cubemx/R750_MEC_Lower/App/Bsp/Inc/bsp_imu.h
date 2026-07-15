@@ -29,4 +29,4 @@ BspStatus BspImu_ReadRegs(uint8_t start_reg, uint8_t *data, uint16_t length);
 }
 #endif
 
-#endif /* BSP_IMU_H */
+#endif

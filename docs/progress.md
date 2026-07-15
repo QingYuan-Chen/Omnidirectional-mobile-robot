@@ -128,3 +128,10 @@
 - Debug/Release 全量构建均为 66/66 通过。最终记录为 RAM 46,696/46,688 B；Flash 83,608/47,564 B。`app_comm_protocol.c`、`app_motor_open_loop.c`、`app_telemetry.c`、`app_tasks.c`、`bsp_adc.c`、`bsp_uart.c`、`bsp_uart_tx_queue.c` 共 7 个关键源文件通过 `-Wall -Wextra -Wshadow -Wconversion -Werror` 和 GCC `-fanalyzer`。
 - 代码/交付质量与原框架适配/参数遗漏两名独立审批者在阻断问题整改后均明确通过。
 - 尚未执行 UART4 板上持续收发/拥塞/错误恢复、ADC 电压标定、MA 实际运动、WCET/抖动/栈水位和延期的 M1.3 联合验收；G1.3 状态为“软件完成、待板测”。
+
+## 2026-07-15：统一已完成自研代码的中文注释
+
+- 注释整理范围限定在自研 `App/`、BSP 接口和主机测试，不改写 CubeMX 自动生成代码、HAL、FreeRTOS 等第三方源码。
+- 删除头文件保护宏后的英文式尾注，将现有英文说明改为中文；重点为协议两阶段序号提交、TIM7 时基、IMU 非阻塞退避与稳定恢复、ESKF 输入边界、电机安全状态机、UART 原子发送所有权和任务级执行器仲裁补充中文注释。
+- 注释语言扫描确认上述自研范围内每个注释块均包含中文；本次没有修改功能逻辑、任务参数、控制参数、接口或 `.ioc`。
+- 主机测试全量重建后 9/9 通过；Debug/Release 全量构建均为 66/66，资源占用保持 RAM 46,696/46,688 B、Flash 83,608/47,564 B。

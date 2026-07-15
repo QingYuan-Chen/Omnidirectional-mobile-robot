@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* 遥测采用定长缓冲区和整数格式化，禁止动态分配及浮点文本格式化。 */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -44,4 +46,4 @@ bool AppTelemetry_Format(
 }
 #endif
 
-#endif /* APP_TELEMETRY_H */
+#endif

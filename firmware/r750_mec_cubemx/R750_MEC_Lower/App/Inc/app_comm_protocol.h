@@ -6,6 +6,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* 临时试验协议只负责解析与验序，普通运动命令成功入队后才提交序号。 */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -66,4 +68,4 @@ uint32_t AppCommProtocol_GetRejectedCount(const AppCommProtocolStats *stats);
 }
 #endif
 
-#endif /* APP_COMM_PROTOCOL_H */
+#endif

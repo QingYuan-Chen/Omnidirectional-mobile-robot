@@ -37,6 +37,7 @@ static void AppControlTimebase_ResetState(void)
 
 static bool AppControlTimebase_ConfigurationMatches(void)
 {
+  /* 启动前同时核对时钟树、TIM7 参数和中断优先级，避免局部改参后静默漂移。 */
   const uint32_t pclk1_hz = HAL_RCC_GetPCLK1Freq();
   const uint32_t actual_timer_clock_hz =
     (RCC->CFGR & RCC_CFGR_PPRE1) == 0U ? pclk1_hz : pclk1_hz * 2U;
@@ -90,6 +91,7 @@ BspStatus AppControlTimebase_Start(void)
   __HAL_TIM_SET_COUNTER(&htim7, 0U);
   __HAL_TIM_CLEAR_FLAG(&htim7, TIM_FLAG_UPDATE);
 
+  /* 先登记接收任务并置启动标志，再开启定时器，关闭首个通知无接收者的窗口。 */
   taskENTER_CRITICAL();
   AppControlTimebase_ResetState();
   previous_irq_timestamp_cycles = DWT->CYCCNT;
@@ -129,6 +131,7 @@ BspStatus AppControlTimebase_Wait(AppControlTick *tick)
     return BSP_INVALID_ARG;
   }
 
+  /* 计数型通知保留迟到周期数，带序号缓冲区再把通知与对应快照配对。 */
   const uint32_t notification_count = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
   const uint32_t wake_cycles = DWT->CYCCNT;
   AppControlTickSample sample;
@@ -165,6 +168,7 @@ void AppControlTimebase_OnTimerElapsedFromIsr(void)
     return;
   }
 
+  /* 中断内只做定长采集、发布和通知，不执行测速、状态机或控制律。 */
   const uint32_t now_cycles = irq_entry_timestamp_cycles;
   const uint32_t irq_period_cycles = now_cycles - previous_irq_timestamp_cycles;
   if (elapsed_cycles_since_start > (UINT64_MAX - (uint64_t)irq_period_cycles)) {

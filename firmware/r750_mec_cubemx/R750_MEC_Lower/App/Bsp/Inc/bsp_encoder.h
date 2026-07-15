@@ -17,4 +17,4 @@ void BspEncoder_ResetAll(void);
 }
 #endif
 
-#endif /* BSP_ENCODER_H */
+#endif

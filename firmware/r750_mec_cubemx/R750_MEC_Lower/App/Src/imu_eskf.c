@@ -76,6 +76,7 @@ static void ImuEskf_MatrixMultiplyRightTranspose6(const float left[36], const fl
 
 static bool ImuEskf_Invert3(const float matrix[9], float inverse[9])
 {
+  /* 创新协方差应为正定矩阵，使用三阶乔列斯基分解同时完成合法性检查。 */
   const float l00_squared = matrix[0];
   if (!isfinite(l00_squared) || l00_squared <= 1.0e-12f) {
     return false;
@@ -156,6 +157,7 @@ bool ImuEskf_IsStateFinite(const ImuEskf *filter)
 
 static void ImuEskf_Predict(ImuEskf *filter, const float angular_rate_rad_s[3], float delta_time_s)
 {
+  /* 名义四元数由去零偏角速度传播，六维误差协方差按线性化模型传播。 */
   float omega[3];
   for (uint32_t i = 0U; i < 3U; ++i) {
     omega[i] = angular_rate_rad_s[i] - filter->gyro_bias_rad_s[i];
@@ -212,6 +214,7 @@ static bool ImuEskf_CorrectAcceleration(ImuEskf *filter,
                                         const float acceleration_mps2[3],
                                         bool *vibration_high)
 {
+  /* 仅在加速度模长和创新检验通过时把重力方向作为姿态观测。 */
   const float acceleration_norm = ImuEskf_VectorNorm(acceleration_mps2);
   const float norm_error = fabsf(acceleration_norm - ROBOT_CONFIG_STANDARD_GRAVITY_MPS2);
   *vibration_high = norm_error > IMU_ESKF_VIBRATION_THRESHOLD_MPS2;
@@ -347,6 +350,7 @@ static bool ImuEskf_CorrectAcceleration(ImuEskf *filter,
     }
   }
 
+  /* 约瑟夫形式保持协方差半正定，再用误差注入后的重置雅可比换坐标。 */
   float *joseph = filter->work_a;
   memset(joseph, 0, sizeof(filter->work_a));
   for (uint32_t row = 0U; row < 6U; ++row) {

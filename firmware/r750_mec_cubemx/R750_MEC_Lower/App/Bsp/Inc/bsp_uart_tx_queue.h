@@ -40,4 +40,4 @@ uint32_t BspUartTxQueue_Count(const BspUartTxQueue *queue);
 }
 #endif
 
-#endif /* BSP_UART_TX_QUEUE_H */
+#endif

@@ -20,6 +20,7 @@ static uint32_t AppControlTiming_AbsoluteDifference(uint32_t first, uint32_t sec
 
 static void AppControlTiming_RecordWakeHistogram(AppControlTiming *timing, uint32_t wake_latency_cycles)
 {
+  /* 固定桶直方图避免保存全部样本，板上可持续统计近似 P99 唤醒延迟。 */
   uint32_t bucket = wake_latency_cycles / timing->cycles_per_us;
   if ((wake_latency_cycles % timing->cycles_per_us) != 0U) {
     bucket++;
@@ -74,6 +75,7 @@ uint32_t AppControlTiming_CountMissedTimerPeriods(
   if (expected_period_cycles == 0U) {
     return 0U;
   }
+  /* 从启动后的累计相位计算应有更新数，可发现相邻入口间隔看似正常的折叠中断。 */
   const uint64_t expected_update_count =
     elapsed_cycles_since_start / (uint64_t)expected_period_cycles;
   if (expected_update_count <= serviced_irq_count) {
@@ -119,6 +121,7 @@ void AppControlTiming_RecordWake(
   if (timing->has_previous_tick) {
     const uint32_t sequence_delta = tick_sequence - timing->previous_tick_sequence;
     snapshot->actual_dt_cycles = irq_cycles - timing->previous_irq_cycles;
+    /* 任务漏迭代与定时器漏中断分开计数，便于区分调度问题和硬件时基问题。 */
     if (sequence_delta > 1U) {
       snapshot->task_iteration_missed_period_count = AppControlTiming_AddSaturated(
         snapshot->task_iteration_missed_period_count, sequence_delta - 1U);

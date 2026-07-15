@@ -27,4 +27,4 @@ typedef enum {
   BSP_UART_COUNT
 } BspUartPort;
 
-#endif /* BSP_TYPES_H */
+#endif

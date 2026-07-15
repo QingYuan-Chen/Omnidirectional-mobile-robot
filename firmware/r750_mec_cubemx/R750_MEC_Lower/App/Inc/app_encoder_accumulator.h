@@ -26,4 +26,4 @@ bool AppEncoderAccumulator_Update(
 }
 #endif
 
-#endif /* APP_ENCODER_ACCUMULATOR_H */
+#endif

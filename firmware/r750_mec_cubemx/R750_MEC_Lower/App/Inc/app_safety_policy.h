@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* 可恢复运动禁止与复位恢复型故障锁存分级处理，严重故障优先级最高。 */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -32,4 +34,4 @@ bool AppSafetyPolicy_Update(
 }
 #endif
 
-#endif /* APP_SAFETY_POLICY_H */
+#endif

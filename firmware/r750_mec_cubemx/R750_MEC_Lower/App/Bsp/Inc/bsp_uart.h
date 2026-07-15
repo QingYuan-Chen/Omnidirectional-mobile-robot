@@ -26,7 +26,7 @@ typedef struct {
 
 BspStatus BspUart_Init(void);
 void BspUart_Service(void);
-/* Each port permits one task producer; ISR completion and service recovery drain it. */
+/* 每个端口只允许一个任务作为发送生产者，完成中断和任务恢复路径共同推进队列。 */
 BspStatus BspUart_WriteAsync(BspUartPort port, const uint8_t *data, uint16_t length);
 bool BspUart_ReadByte(BspUartPort port, uint8_t *byte);
 uint16_t BspUart_Available(BspUartPort port);
@@ -37,4 +37,4 @@ BspStatus BspUart_GetStats(BspUartPort port, BspUartStats *stats);
 }
 #endif
 
-#endif /* BSP_UART_H */
+#endif

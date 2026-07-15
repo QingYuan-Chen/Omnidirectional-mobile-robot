@@ -41,4 +41,4 @@ bool AppControlTickBuffer_Consume(
 }
 #endif
 
-#endif /* APP_CONTROL_TICK_BUFFER_H */
+#endif

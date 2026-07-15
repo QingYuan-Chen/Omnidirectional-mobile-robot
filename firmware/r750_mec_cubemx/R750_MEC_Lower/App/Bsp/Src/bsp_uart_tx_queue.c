@@ -43,6 +43,7 @@ bool BspUartTxQueue_Enqueue(
     return false;
   }
 
+  /* 先复制完整帧再发布队首，完成中断不会看到尚未写完的内容。 */
   memcpy(queue->frames[head].data, data, length);
   queue->frames[head].length = length;
   atomic_store_explicit(&queue->head, next_head, memory_order_release);
@@ -77,6 +78,7 @@ bool BspUartTxQueue_Pop(BspUartTxQueue *queue)
   if (tail == head) {
     return false;
   }
+  /* 只有取得发送完成所有权的路径可以推进队尾。 */
   atomic_store_explicit(
     &queue->tail, BspUartTxQueue_Next(tail), memory_order_release);
   return true;

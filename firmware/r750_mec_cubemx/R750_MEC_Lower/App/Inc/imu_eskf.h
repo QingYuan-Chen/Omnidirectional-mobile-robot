@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* 六维误差状态由三维姿态误差和三维陀螺零偏组成，名义姿态使用四元数。 */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -42,4 +44,4 @@ bool ImuEskf_IsStateFinite(const ImuEskf *filter);
 }
 #endif
 
-#endif /* IMU_ESKF_H */
+#endif
