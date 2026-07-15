@@ -6,7 +6,13 @@
 #include <stddef.h>
 #include <string.h>
 
-/* 与硬件无关的 MA 开环状态机，所有输出必须再经过任务级安全仲裁后提交。 */
+/*
+ * 与硬件无关的 MA 开环状态机。
+ *
+ * 该模块只根据输入状态计算下一状态和建议输出，不包含 HAL/RTOS 调用，因此可在主机端
+ * 穷举命令时序。安全优先级固定为“硬故障或急停→可恢复运动禁止→普通命令→超时→
+ * 斜坡与换向”。所有输出仍需任务级最终安全门复核后才能写入电机 BSP。
+ */
 
 _Static_assert(ROBOT_CONFIG_MA_OPEN_LOOP_PWM_LIMIT > 0,
                "MA open-loop limit must be positive");
@@ -19,6 +25,7 @@ _Static_assert(ROBOT_CONFIG_MA_REVERSE_BRAKE_TICKS > 0U,
 
 static uint32_t AppMotorOpenLoop_AddSaturated(uint32_t value, uint32_t increment)
 {
+  /* 诊断计数饱和后保持最大值，防止长期运行回绕掩盖历史异常。 */
   if (increment > (UINT32_MAX - value)) {
     return UINT32_MAX;
   }
@@ -27,13 +34,17 @@ static uint32_t AppMotorOpenLoop_AddSaturated(uint32_t value, uint32_t increment
 
 static bool AppMotorOpenLoop_SequenceIsNewer(uint32_t sequence, uint32_t previous)
 {
-  /* 与协议层使用相同的半区间规则，保证序号回绕时两层判断一致。 */
+  /*
+   * 与协议层使用相同的模 2^32 半区间规则。即使命令绕过或破坏通信层，执行状态机仍会
+   * 独立拒绝重复/旧序号；两层规则必须保持一致，否则回绕附近可能出现解析接受但执行拒绝。
+   */
   const uint32_t difference = sequence - previous;
   return difference != 0U && difference <= (uint32_t)INT32_MAX;
 }
 
 static int16_t AppMotorOpenLoop_ClampPwm(AppMotorOpenLoop *controller, int32_t pwm)
 {
+  /* 状态机再次限幅，不信任协议层已经检查过范围；被限幅命令仍可执行但会留下诊断计数。 */
   int32_t limited = pwm;
   if (limited > ROBOT_CONFIG_MA_OPEN_LOOP_PWM_LIMIT) {
     limited = ROBOT_CONFIG_MA_OPEN_LOOP_PWM_LIMIT;
@@ -49,6 +60,7 @@ static int16_t AppMotorOpenLoop_ClampPwm(AppMotorOpenLoop *controller, int32_t p
 
 static uint32_t AppMotorOpenLoop_RampCapacity(uint32_t elapsed_ms)
 {
+  /* 按实际毫秒间隔计算本周期最大变化量，使偶发调度延迟不会改变长期斜坡速率。 */
   if (elapsed_ms > (UINT32_MAX / ROBOT_CONFIG_MA_PWM_RAMP_COUNTS_PER_MS)) {
     return UINT32_MAX;
   }
@@ -57,6 +69,7 @@ static uint32_t AppMotorOpenLoop_RampCapacity(uint32_t elapsed_ms)
 
 static int16_t AppMotorOpenLoop_MoveToward(int16_t current, int16_t target, uint32_t capacity)
 {
+  /* 单调靠近目标且不越过目标，32 位中间值避免 int16_t 相减溢出。 */
   const int32_t difference = (int32_t)target - (int32_t)current;
   if (difference > 0) {
     const uint32_t increment = (uint32_t)difference < capacity
@@ -86,7 +99,11 @@ static void AppMotorOpenLoop_LatchEstop(
     return;
   }
 
-  /* 急停是复位恢复型状态，不允许后续普通命令在本次运行中解除。 */
+  /*
+   * 急停锁存只在首次进入时计数并发出一次 emergency_coast_request。后续 hard_fault 输入
+   * 仍会进入本函数，但不再发出紧急请求，并保留 Step 入口设置的零 PWM/BRAKE 默认输出；
+   * PWM 基础设施已关闭，普通制动写入不会恢复驱动。任何 ARM/STOP/PWM 都不能解除锁存。
+   */
   controller->snapshot.state = APP_MOTOR_OPEN_LOOP_ESTOP_LATCHED;
   controller->snapshot.target_pwm = 0;
   controller->snapshot.applied_pwm = 0;
@@ -143,6 +160,7 @@ bool AppMotorOpenLoop_Step(
   output->pwm = 0;
   output->emergency_coast_request = false;
   const uint32_t elapsed_ms = now_ms - controller->last_step_ms;
+  /* 默认输出为零主动制动，确保任何未覆盖的普通状态都不会意外保留上一周期 PWM。 */
   controller->last_step_ms = now_ms;
 
   if (hard_fault_latched || request->type == APP_MOTOR_REQUEST_ESTOP) {
@@ -159,7 +177,10 @@ bool AppMotorOpenLoop_Step(
       controller->snapshot.inhibit_transition_count = AppMotorOpenLoop_AddSaturated(
         controller->snapshot.inhibit_transition_count, 1U);
     }
-    /* 可恢复禁止也清除旧序号，使恢复后必须重新 ARM，不能沿用旧运行上下文。 */
+    /*
+     * 可恢复禁止立即空转并清除目标、实际输出、序号和超时上下文。安全门恢复时只退回
+     * DISARMED，操作者必须发送全新序号的 ARM，旧 PWM 不会自动恢复。
+     */
     controller->snapshot.state = APP_MOTOR_OPEN_LOOP_INHIBITED;
     controller->snapshot.target_pwm = 0;
     controller->snapshot.applied_pwm = 0;
@@ -179,7 +200,10 @@ bool AppMotorOpenLoop_Step(
   if (request_type == APP_MOTOR_REQUEST_ARM ||
       request_type == APP_MOTOR_REQUEST_SET_PWM ||
       request_type == APP_MOTOR_REQUEST_STOP) {
-    /* 合法新序号先被状态机消费，即使当前状态拒绝其语义也不能再次重放。 */
+    /*
+     * 先消费合法新序号，再判断命令在当前状态下是否允许。这样发送端不能反复重放一条
+     * “序号有效但状态不允许”的命令，等待状态变化后让它意外生效。
+     */
     if (controller->snapshot.has_sequence &&
         !AppMotorOpenLoop_SequenceIsNewer(
           request->sequence, controller->snapshot.last_sequence)) {
@@ -197,6 +221,7 @@ bool AppMotorOpenLoop_Step(
       break;
 
     case APP_MOTOR_REQUEST_ARM:
+      /* ARM 只允许从 DISARMED 进入零输出 ARMED，不隐含任何 PWM 目标。 */
       if (controller->snapshot.state != APP_MOTOR_OPEN_LOOP_DISARMED) {
         AppMotorOpenLoop_RejectRequest(controller);
         break;
@@ -211,6 +236,7 @@ bool AppMotorOpenLoop_Step(
       break;
 
     case APP_MOTOR_REQUEST_SET_PWM:
+      /* 超时停车或计划在零点撤销使能时拒绝新 PWM，避免停车过程被中途抢占。 */
       if (!AppMotorOpenLoop_IsCommandState(controller->snapshot.state) ||
           controller->timeout_active || controller->disarm_at_zero) {
         AppMotorOpenLoop_RejectRequest(controller);
@@ -229,6 +255,7 @@ bool AppMotorOpenLoop_Step(
       break;
 
     case APP_MOTOR_REQUEST_STOP:
+      /* 主动 STOP 斜坡到零后仍保持 ARMED；只有超时路径设置 disarm_at_zero。 */
       if (controller->snapshot.state != APP_MOTOR_OPEN_LOOP_DISARMED) {
         controller->snapshot.target_pwm = 0;
         controller->snapshot.state = APP_MOTOR_OPEN_LOOP_STOPPING;
@@ -251,7 +278,10 @@ bool AppMotorOpenLoop_Step(
   if (!command_refreshed && !controller->timeout_active &&
       AppMotorOpenLoop_RequiresCommandRefresh(controller->snapshot.state) &&
       (now_ms - controller->last_valid_command_ms) >= ROBOT_CONFIG_CMD_TIMEOUT_MS) {
-    /* 超时停车不可被新 PWM 或 STOP 取消，停稳并撤销使能后才能重新 ARM。 */
+    /*
+     * 仅 ARMED、RUNNING、REVERSING_BRAKE 需要命令保活。超时后进入不可取消的降零过程，
+     * 到零自动 DISARMED 并清除序号基线，必须重新 ARM 才能恢复。
+     */
     controller->snapshot.command_timeout_count = AppMotorOpenLoop_AddSaturated(
       controller->snapshot.command_timeout_count, 1U);
     controller->snapshot.target_pwm = 0;
@@ -273,7 +303,10 @@ bool AppMotorOpenLoop_Step(
     }
     controller->snapshot.state = APP_MOTOR_OPEN_LOOP_RUNNING;
   } else if (reversing) {
-    /* 反向目标先按斜坡降到零，再保持规定的制动周期，禁止跨零直接换向。 */
+    /*
+     * 检测到目标与实际符号相反时，当前周期只向零斜坡，不直接向反向目标移动。到零后
+     * 进入 REVERSING_BRAKE，并按完整控制节拍保持主动制动，再恢复 RUNNING 加速到反向。
+     */
     controller->snapshot.applied_pwm = AppMotorOpenLoop_MoveToward(
       controller->snapshot.applied_pwm, 0, ramp_capacity);
     if (controller->snapshot.applied_pwm == 0) {
@@ -311,6 +344,7 @@ bool AppMotorOpenLoop_Step(
       controller->reverse_brake_ticks_remaining = 0U;
     }
   }
+  /* 零点收尾统一决定回到 ARMED 还是 DISARMED，避免 STOP、超时和换向各自重复清理状态。 */
   return true;
 }
 

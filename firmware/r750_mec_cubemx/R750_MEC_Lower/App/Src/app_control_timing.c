@@ -3,12 +3,18 @@
 #include <limits.h>
 #include <string.h>
 
-/* 纯计算模块不依赖 HAL 或 RTOS，便于在主机端验证时序统计边界。 */
+/*
+ * 控制时序统计保持为纯计算模块，不依赖 HAL 或 RTOS。
+ * 输入时间戳都来自同一个 DWT 32 位计数域，短间隔使用无符号减法自然处理回绕；累计值
+ * 采用饱和运算。这样主机测试可以构造通知合并、漏中断、计数回绕和截止期边界，而无需
+ * 模拟 STM32 外设。
+ */
 
 #define APP_CONTROL_TIMING_MICROSECONDS_PER_SECOND (1000000U)
 
 static uint32_t AppControlTiming_AddSaturated(uint32_t value, uint32_t increment)
 {
+  /* 所有长期诊断计数保持单调，饱和后不因回绕掩盖历史故障。 */
   if (increment > (UINT32_MAX - value)) {
     return UINT32_MAX;
   }
@@ -22,7 +28,10 @@ static uint32_t AppControlTiming_AbsoluteDifference(uint32_t first, uint32_t sec
 
 static void AppControlTiming_RecordWakeHistogram(AppControlTiming *timing, uint32_t wake_latency_cycles)
 {
-  /* 固定桶直方图避免保存全部样本，板上可持续统计近似 P99 唤醒延迟。 */
+  /*
+   * 先向上取整到微秒桶，避免把非零亚微秒延迟记录为 0；超过 100 us 的全部样本压入
+   * 最后一桶。固定 101 个桶使 RAM 和每次更新时间有明确上界，不保存原始样本序列。
+   */
   uint32_t bucket = wake_latency_cycles / timing->cycles_per_us;
   if ((wake_latency_cycles % timing->cycles_per_us) != 0U) {
     bucket++;
@@ -35,6 +44,7 @@ static void AppControlTiming_RecordWakeHistogram(AppControlTiming *timing, uint3
 
 static uint32_t AppControlTiming_CalculateP99Us(const AppControlTiming *timing)
 {
+  /* ceil(0.99*N) 选择至少覆盖 99% 样本的第一个桶；最后一桶代表“100 us 或更高”。 */
   uint64_t sample_total = 0U;
   for (uint32_t i = 0U; i < APP_CONTROL_TIMING_HISTOGRAM_BUCKETS; ++i) {
     sample_total += (uint64_t)timing->wake_histogram[i];
@@ -77,7 +87,10 @@ uint32_t AppControlTiming_CountMissedTimerPeriods(
   if (expected_period_cycles == 0U) {
     return 0U;
   }
-  /* 从启动后的累计相位计算应有更新数，可发现相邻入口间隔看似正常的折叠中断。 */
+  /*
+   * 不能只看相邻 IRQ 周期：定时器更新标志可能在长时间屏蔽中断期间多次置位但只服务
+   * 一次，之后相邻间隔又恢复正常。累计相位给出启动以来应有更新总数，可保留这段历史。
+   */
   const uint64_t expected_update_count =
     elapsed_cycles_since_start / (uint64_t)expected_period_cycles;
   if (expected_update_count <= serviced_irq_count) {
@@ -123,7 +136,10 @@ void AppControlTiming_RecordWake(
   if (timing->has_previous_tick) {
     const uint32_t sequence_delta = tick_sequence - timing->previous_tick_sequence;
     snapshot->actual_dt_cycles = irq_cycles - timing->previous_irq_cycles;
-    /* 任务漏迭代与定时器漏中断分开计数，便于区分调度问题和硬件时基问题。 */
+    /*
+     * sequence_delta>1 表示中断快照已产生但控制任务跳过了中间迭代，属于调度/负载问题；
+     * timer_irq_missed_period_count 则由时基累计相位检测，属于中断服务问题。两者分别累计。
+     */
     if (sequence_delta > 1U) {
       snapshot->task_iteration_missed_period_count = AppControlTiming_AddSaturated(
         snapshot->task_iteration_missed_period_count, sequence_delta - 1U);
@@ -162,6 +178,10 @@ void AppControlTiming_RecordComplete(AppControlTiming *timing, uint32_t complete
   }
 
   AppControlTimingSnapshot *const snapshot = &timing->snapshot;
+  /*
+   * wcet_cycles 当前字段名沿用“周期执行时间”语义，记录最近一次任务从唤醒到完成的耗时；
+   * wcet_max_cycles 才是观测到的最坏值。截止期从中断入口计时，因此还包含唤醒延迟。
+   */
   snapshot->wcet_cycles = complete_cycles - timing->active_wake_cycles;
   if (snapshot->wcet_cycles > snapshot->wcet_max_cycles) {
     snapshot->wcet_max_cycles = snapshot->wcet_cycles;

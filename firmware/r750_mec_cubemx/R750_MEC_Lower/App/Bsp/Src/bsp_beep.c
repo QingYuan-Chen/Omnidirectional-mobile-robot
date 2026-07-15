@@ -2,7 +2,11 @@
 
 #include "main.h"
 
-/* 蜂鸣器为简单 GPIO 执行器，初始化默认关闭，避免上电误响。 */
+/*
+ * 蜂鸣器是高电平有效的简单 GPIO 执行器，不保存软件镜像状态。
+ * 初始化第一动作即写低，避免 CubeMX GPIO 初值或复位过渡造成持续误响；Set/Toggle 都是
+ * 非阻塞寄存器操作，提示时长由调用任务控制。
+ */
 
 BspStatus BspBeep_Init(void)
 {

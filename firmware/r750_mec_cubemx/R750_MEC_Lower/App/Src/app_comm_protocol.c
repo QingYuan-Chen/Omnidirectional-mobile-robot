@@ -4,7 +4,12 @@
 #include <stddef.h>
 #include <string.h>
 
-/* 逐字节解析器把不可信串口文本转换为有界、可验序的内部命令。 */
+/*
+ * 逐字节解析器把不可信 UART4 文本转换为有界、可验序的内部命令。
+ * 所有解析都在固定 64 字节行缓冲和最多四个 token 内完成；不调用 strtol，也不依赖
+ * 零终止输入，从而能逐字节检查字符范围与整数溢出。协议层与执行状态机各自再次验序，
+ * 前者保护通信队列，后者保护执行器，形成两道防重放边界。
+ */
 
 _Static_assert(ROBOT_CONFIG_UART_LINE_BUFFER_SIZE >= 16U,
                "UART command line buffer is too small");
@@ -16,6 +21,7 @@ typedef struct {
 
 static uint32_t AppCommProtocol_AddSaturated(uint32_t value, uint32_t increment)
 {
+  /* 诊断计数只允许单调增加；到达上限后保持 UINT32_MAX，避免长期运行回绕。 */
   if (increment > (UINT32_MAX - value)) {
     return UINT32_MAX;
   }
@@ -36,7 +42,11 @@ static uint16_t AppCommProtocol_Tokenize(
   uint16_t length,
   AppCommToken tokens[4])
 {
-  /* 只接受单个空格分隔的有限字段，避免隐式兼容制表符等控制字符。 */
+  /*
+   * 前置字符检查已拒绝制表符和其他控制字符，这里只把普通空格视为分隔符。连续空格
+   * 被折叠，但命令名和数字 token 必须完整匹配；超过三个有效字段时返回哨兵计数 4，
+   * 由上层统一按语法错误拒绝。
+   */
   uint16_t position = 0U;
   uint16_t count = 0U;
   while (position < length) {
@@ -63,6 +73,7 @@ static uint16_t AppCommProtocol_Tokenize(
 
 static bool AppCommProtocol_ParseU32(const AppCommToken *token, uint32_t *value)
 {
+  /* 逐位做乘十前边界检查，禁止符号、空串及超过 uint32_t 的十进制文本。 */
   if (token == NULL || value == NULL || token->length == 0U) {
     return false;
   }
@@ -85,6 +96,10 @@ static bool AppCommProtocol_ParseU32(const AppCommToken *token, uint32_t *value)
 
 static bool AppCommProtocol_ParseI32(const AppCommToken *token, int32_t *value)
 {
+  /*
+   * 先在无符号幅值域解析，以便合法表示 INT32_MIN 的绝对值 2147483648；正数上限仍限制
+   * 为 INT32_MAX。协议不接受显式加号，减少同一个数值的多种文本表示。
+   */
   if (token == NULL || value == NULL || token->length == 0U) {
     return false;
   }
@@ -125,7 +140,10 @@ static bool AppCommProtocol_ParseI32(const AppCommToken *token, int32_t *value)
 
 static bool AppCommProtocol_SequenceIsNewer(uint32_t sequence, uint32_t previous)
 {
-  /* 半区间比较同时支持 uint32_t 回绕，并拒绝重复值和跨越半空间的旧值。 */
+  /*
+   * 在模 2^32 序号空间中，前向距离 1～INT32_MAX 视为更新；0 是重复，另一半空间视为旧值。
+   * 该规则允许自然回绕，同时要求发送端不能一次跳过超过半个序号空间。
+   */
   const uint32_t difference = sequence - previous;
   return difference != 0U && difference <= (uint32_t)INT32_MAX;
 }
@@ -141,6 +159,11 @@ static AppCommFeedResult AppCommProtocol_ParseLine(
   AppCommProtocol *protocol,
   AppCommCommand *command)
 {
+  /*
+   * 一条完整行的处理顺序为：兼容 CRLF、检查 ASCII 可打印范围、分词、匹配命令形状、
+   * 解析序号、执行防重放预检、最后检查 PWM 数值范围。任一步失败只增加对应诊断计数，
+   * 不部分更新已提交序号。
+   */
   uint16_t length = protocol->line_length;
   if (length > 0U && protocol->line[length - 1U] == (uint8_t)'\r') {
     length--;
@@ -245,7 +268,10 @@ AppCommFeedResult AppCommProtocol_FeedByte(
     return result;
   }
   if (protocol->discarding_line) {
-    /* 行溢出或非法字符后丢弃到下一次换行，避免残片被解释成新命令。 */
+    /*
+     * 一旦当前行判坏，后续内容全部丢弃到换行。立即重新开始组帧会把超长命令的尾部
+     * 误解释成一条新命令，尤其可能绕过原命令名检查。
+     */
     return APP_COMM_FEED_NONE;
   }
   if (byte != (uint8_t)'\r' && (byte < 0x20U || byte > 0x7EU)) {
@@ -282,7 +308,10 @@ bool AppCommProtocol_CommitSequence(
         command->sequence, protocol->last_sequence)) {
     return false;
   }
-  /* 调用者仅在有序命令队列入队成功后执行此提交，队满时允许同序号重试。 */
+  /*
+   * 序号提交是解析与排队之间的事务边界：队列拥有命令副本后才推进 last_sequence。
+   * 若队列已满，调用者不提交，发送端即可稍后原序号重发而不会被误判为重放。
+   */
   protocol->last_sequence = command->sequence;
   protocol->has_sequence = true;
   return true;

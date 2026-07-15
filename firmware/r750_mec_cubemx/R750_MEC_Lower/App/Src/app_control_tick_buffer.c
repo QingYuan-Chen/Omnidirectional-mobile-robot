@@ -2,7 +2,11 @@
 
 #include <stddef.h>
 
-/* 带序号环形缓冲区保证中断快照与计数型通知一一对应。 */
+/*
+ * 带序号环形缓冲区保证 TIM7 中断快照与 FreeRTOS 计数型通知对应。
+ * 生产者和消费者都使用单调 uint32_t 序号，索引只取低位；序号本身保留在槽内用于区分
+ * “目标数据仍在”与“索引相同但已经绕环覆盖”。正常 uint32_t 序号回绕仍可按模运算工作。
+ */
 
 _Static_assert(ROBOT_CONFIG_CONTROL_TICK_RING_SIZE >= 2U,
                "control tick ring requires at least two slots");
@@ -12,6 +16,7 @@ _Static_assert((ROBOT_CONFIG_CONTROL_TICK_RING_SIZE &
 
 static uint32_t AppControlTickBuffer_Index(uint32_t sequence)
 {
+  /* 环长由静态断言保证为 2 的幂，因此位与等价于取模且适合中断固定路径。 */
   return sequence & (ROBOT_CONFIG_CONTROL_TICK_RING_SIZE - 1U);
 }
 
@@ -57,7 +62,10 @@ void AppControlTickBuffer_PublishFromIsr(
     slot->encoder_raw[motor_index] = encoder_raw[motor_index];
   }
 
-  /* 序号最后写入，作为该槽内容已经完整提交的标志。 */
+  /*
+   * tick_sequence 是槽位提交标志，必须在所有载荷字段之后写入；produced_sequence 再最后
+   * 推进。调用处用临界区隔离任务消费，避免编译器与中断交错暴露半写入内容。
+   */
   slot->tick_sequence = sequence;
   buffer->produced_sequence = sequence;
 }
@@ -74,7 +82,10 @@ bool AppControlTickBuffer_Consume(
   const uint32_t target_sequence = buffer->consumed_sequence + notification_count;
   volatile const AppControlTickSample *const slot =
     &buffer->slots[AppControlTickBuffer_Index(target_sequence)];
-  /* 序号不匹配表示目标槽尚未提交或已被后续中断覆盖，不能返回错配数据。 */
+  /*
+   * 消费目标由“上次已消费序号 + 本次通知累计数”确定。序号不匹配只有两种含义：目标
+   * 还未完整提交，或控制任务落后超过环深而槽位已被覆盖；两者都不能降级成读取最新值。
+   */
   if (slot->tick_sequence != target_sequence) {
     return false;
   }

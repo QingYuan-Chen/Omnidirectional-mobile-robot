@@ -6,7 +6,12 @@
 #include <limits.h>
 #include <stdatomic.h>
 
-/* UART 实现把逐字节接收、异步发送和错误恢复限制在 BSP 内部。 */
+/*
+ * UART 实现为每个逻辑端口维护独立的接收环、发送队列、原子统计和恢复状态。
+ * 接收中断是环形缓冲唯一生产者，通信任务是唯一消费者；发送通信任务是唯一生产者，
+ * HAL 完成回调与任务恢复路径通过 tx_state 竞争同一逻辑消费者所有权。中断路径不循环
+ * 重试，所有可能持续失败的恢复都交给周期 Service。
+ */
 
 #define BSP_UART_RX_BUFFER_SIZE (256U)
 #define BSP_UART_TX_STATE_IDLE       (0U)
@@ -14,6 +19,10 @@
 #define BSP_UART_TX_STATE_COMPLETING (2U)
 
 typedef struct {
+  /*
+   * handle/irq_byte 在初始化后固定；rx_buffer 与 tx_queue 保存实际数据；所有会被任务和中断
+   * 同时访问的索引、标志和计数均为 C11 原子。HAL 句柄内部状态由 HAL 驱动维护。
+   */
   UART_HandleTypeDef *handle;
   uint8_t irq_byte;
   uint8_t rx_buffer[BSP_UART_RX_BUFFER_SIZE];
@@ -37,7 +46,7 @@ typedef struct {
   _Atomic uint32_t tx_state;
 } BspUartContext;
 
-/* 上下文由任务和中断共同访问，共享索引、统计量和发送所有权均使用原子变量。 */
+/* 两个上下文按 BspUartPort 索引，逻辑端口与 HAL 句柄在 BspUart_Init 中一次绑定。 */
 static BspUartContext uart_contexts[BSP_UART_COUNT];
 
 static bool BspUart_IsValid(BspUartPort port)
@@ -61,6 +70,7 @@ static BspStatus BspUart_FromHal(HAL_StatusTypeDef status)
 
 static void BspUart_IncrementSaturated(_Atomic uint32_t *counter)
 {
+  /* CAS 循环允许任务与中断同时累计同一诊断，达到 UINT32_MAX 后保持饱和。 */
   uint32_t current = atomic_load_explicit(counter, memory_order_relaxed);
   while (current != UINT32_MAX &&
          !atomic_compare_exchange_weak_explicit(
@@ -79,6 +89,7 @@ static uint16_t BspUart_NextIndex(uint16_t index)
 
 static void BspUart_ResetContext(BspUartContext *context)
 {
+  /* 仅在收发尚未启动时调用；重置所有索引、统计、恢复标志、发送队列和所有权状态。 */
   atomic_store_explicit(&context->head, 0U, memory_order_relaxed);
   atomic_store_explicit(&context->tail, 0U, memory_order_relaxed);
   atomic_store_explicit(&context->overflow_count, 0U, memory_order_relaxed);
@@ -102,6 +113,10 @@ static void BspUart_ResetContext(BspUartContext *context)
 
 static BspStatus BspUart_StartReceive(BspUartContext *context)
 {
+  /*
+   * 每次只挂起一个字节的 HAL 中断接收。失败时增加 restart_failure 并保留 recovery_pending，
+   * 后续 Service 会在 HAL RxState 回到 READY 后重试；成功才清除 pending。
+   */
   const HAL_StatusTypeDef status = HAL_UART_Receive_IT(context->handle, &context->irq_byte, 1U);
   if (status != HAL_OK) {
     BspUart_IncrementSaturated(&context->rx_restart_failure_count);
@@ -132,6 +147,10 @@ static void BspUart_RecordErrors(BspUartContext *context, uint32_t error_code)
 
 static void BspUart_RecordAndClearPendingErrors(BspUartContext *context)
 {
+  /*
+   * 先按 ErrorCode 位分别计数，再用 HAL 宏清除外设错误标志并复位句柄 ErrorCode。必须在
+   * 重启接收前完成，否则 HAL 可能继续把新接收判为同一旧错误。
+   */
   const uint32_t error_code = context->handle->ErrorCode;
   if (error_code == HAL_UART_ERROR_NONE) {
     return;
@@ -144,6 +163,7 @@ static void BspUart_RecordAndClearPendingErrors(BspUartContext *context)
 
 static void BspUart_TryRecover(BspUartContext *context)
 {
+  /* 只有 pending 且 HAL 接收状态 READY 时才尝试重启，避免在中断仍活动时重复调用 HAL。 */
   if (!atomic_load_explicit(
         &context->rx_recovery_pending, memory_order_acquire) ||
       context->handle->RxState != HAL_UART_STATE_READY) {
@@ -168,14 +188,20 @@ static void BspUart_PushByte(BspUartContext *context, uint8_t byte)
     return;
   }
 
-  /* 先写数据再发布新队首，任务侧取得队首后才能读取完整字节。 */
+  /*
+   * 中断生产者 relaxed 读取自己的 head，acquire 读取任务 tail 判断是否满；写入字节后
+   * release 发布 head。满时采用丢新字节策略并计数，不覆盖尚未消费的旧数据。
+   */
   context->rx_buffer[head] = byte;
   atomic_store_explicit(&context->head, next_head, memory_order_release);
 }
 
 static BspStatus BspUart_StartNextTransmit(BspUartContext *context)
 {
-  /* 必须先取得发送所有权再读取队首，防止立即完成回调弹出后仍使用旧帧指针。 */
+  /*
+   * IDLE→ACTIVE 的 CAS 必须发生在 Peek 前。某些短帧可能在 HAL 起发后很快完成，若先取得
+   * 队首指针再声明所有权，完成回调可能弹出槽位而本路径仍使用已经可复用的旧指针。
+   */
   uint32_t expected_state = BSP_UART_TX_STATE_IDLE;
   if (!atomic_compare_exchange_strong_explicit(
         &context->tx_state,
@@ -200,13 +226,16 @@ static BspStatus BspUart_StartNextTransmit(BspUartContext *context)
     return BSP_OK;
   }
   if (hal_status == HAL_BUSY) {
-    /* 外设忙时保留队首并释放所有权，交给后续服务周期重试。 */
+    /* HAL_BUSY 不丢帧：保留 tail 槽位并把状态退回 IDLE，后续 Service 再尝试起发。 */
     atomic_store_explicit(
       &context->tx_state, BSP_UART_TX_STATE_IDLE, memory_order_release);
     return BSP_BUSY;
   }
 
-  /* 不可重试的起发错误丢弃当前帧并计数，避免坏帧永久堵住队列。 */
+  /*
+   * 当前软件策略把 ERROR/TIMEOUT 记为起发失败并 Pop 本帧，避免同一队首永久堵塞整个
+   * 发送队列；这不表示硬件不可恢复。调用者收到错误状态，后续帧仍可由 Service 处理。
+   */
   BspUart_IncrementSaturated(&context->tx_start_failure_count);
   (void)BspUartTxQueue_Pop(&context->tx_queue);
   atomic_store_explicit(
@@ -216,7 +245,10 @@ static BspStatus BspUart_StartNextTransmit(BspUartContext *context)
 
 static void BspUart_ServiceTransmit(BspUartContext *context)
 {
-  /* HAL 已空闲但完成回调缺失时，由任务恢复路径独占弹出并继续发送。 */
+  /*
+   * 正常发送期间 tx_state=ACTIVE。若 HAL gState 已 READY 但完成回调没有推进队列，任务
+   * CAS 到 COMPLETING 后代替回调 Pop；若回调先取得所有权，CAS 失败便不重复弹出。
+   */
   uint32_t expected_state = BSP_UART_TX_STATE_ACTIVE;
   if (context->handle->gState == HAL_UART_STATE_READY &&
       atomic_compare_exchange_strong_explicit(
@@ -235,6 +267,10 @@ static void BspUart_ServiceTransmit(BspUartContext *context)
 
 BspStatus BspUart_Init(void)
 {
+  /*
+   * 先绑定固定硬件角色，再逐端口重置并启动首字节接收。若后一个端口失败，主动 Abort
+   * 之前已启动端口，避免对上层返回失败后仍有接收中断写入半初始化上下文。
+   */
   uart_contexts[BSP_UART_ROS].handle = &huart2;
   uart_contexts[BSP_UART_TTL].handle = &huart4;
   for (uint32_t i = 0; i < BSP_UART_COUNT; ++i) {
@@ -274,6 +310,7 @@ BspStatus BspUart_WriteAsync(BspUartPort port, const uint8_t *data, uint16_t len
     return BSP_BUSY;
   }
   BspUart_IncrementSaturated(&context->tx_enqueued_frame_count);
+  /* 入队成功即拥有稳定副本；HAL_BUSY 只表示当前无法起发，由 Service 重试，因此对调用者返回 OK。 */
   const BspStatus start_status = BspUart_StartNextTransmit(context);
   return start_status == BSP_ERROR || start_status == BSP_TIMEOUT
            ? start_status
@@ -294,6 +331,7 @@ bool BspUart_ReadByte(BspUartPort port, uint8_t *byte)
   }
 
   *byte = context->rx_buffer[tail];
+  /* acquire 读取 head 后可见中断发布的字节；release 推进 tail 后生产者可安全复用该槽位。 */
   atomic_store_explicit(
     &context->tail, BspUart_NextIndex(tail), memory_order_release);
 
@@ -365,6 +403,10 @@ BspStatus BspUart_GetStats(BspUartPort port, BspUartStats *stats)
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
+  /*
+   * 回调按 HAL 句柄定位逻辑端口。存在错误时不接收当前 irq_byte，只标记恢复；正常时先把
+   * 字节发布到软件环，再立即挂起下一字节接收，保持连续流。
+   */
   for (uint32_t i = 0; i < BSP_UART_COUNT; ++i) {
     BspUartContext *context = &uart_contexts[i];
     if (context->handle == huart) {
@@ -385,7 +427,10 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
   for (uint32_t i = 0U; i < (uint32_t)BSP_UART_COUNT; ++i) {
     BspUartContext *context = &uart_contexts[i];
     if (context->handle == huart) {
-      /* 完成中断和任务恢复路径竞争同一三态所有权，只有胜者可以弹出队首。 */
+      /*
+       * ACTIVE→COMPLETING 的 CAS 决定唯一 Pop 所有者。若 CAS 失败，通常表示任务恢复路径
+       * 已先处理该完成事件；只增加恢复诊断，绝不再次推进 tail。
+       */
       uint32_t expected_state = BSP_UART_TX_STATE_ACTIVE;
       if (!atomic_compare_exchange_strong_explicit(
             &context->tx_state,
@@ -411,6 +456,10 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
+  /*
+   * 错误回调记录并清理当前错误，再置 recovery_pending。TryRecover 只在 HAL 状态允许时
+   * 起一次接收；若仍失败，pending 保持，交给下一个任务 Service 周期继续尝试。
+   */
   for (uint32_t i = 0; i < BSP_UART_COUNT; ++i) {
     BspUartContext *context = &uart_contexts[i];
     if (context->handle == huart) {

@@ -11,13 +11,22 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* TIM7、DWT、编码器快照和直接任务通知共同构成确定性控制时基。 */
+/*
+ * TIM7、DWT 周期计数、编码器同步快照和 FreeRTOS 直接任务通知共同构成确定性控制时基。
+ * 中断侧只保存“节拍发生时”的事实，任务侧才计算增量、执行状态机和发布诊断。这样既
+ * 限制中断最坏执行时间，又使控制算法未来可替换而不改变硬件节拍来源。
+ */
 
 _Static_assert(
   ROBOT_CONFIG_CONTROL_TIMER_IRQ_PRIORITY >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY,
   "TIM7 interrupt priority may not call FreeRTOS FromISR APIs");
 
 static AppControlTickBuffer tick_buffer;
+/*
+ * 以下状态只有两类写入者：启动/停止由登记控制任务执行，中断时间与生产计数由 TIM7
+ * 中断执行。timebase_started 和 control_task_handle 共同构成中断发布许可，修改它们时
+ * 必须位于临界区，避免中断向已撤销任务发送通知。
+ */
 static TaskHandle_t control_task_handle;
 static volatile bool timebase_started;
 static volatile uint32_t irq_entry_timestamp_cycles;
@@ -29,6 +38,7 @@ static uint64_t serviced_irq_count;
 
 static void AppControlTimebase_ResetState(void)
 {
+  /* 每次启动都重建相位原点，旧通知和旧快照不得跨越一次 Stop/Start 生命周期。 */
   AppControlTickBuffer_Init(&tick_buffer);
   irq_entry_timestamp_cycles = 0U;
   previous_irq_timestamp_cycles = 0U;
@@ -39,7 +49,11 @@ static void AppControlTimebase_ResetState(void)
 
 static bool AppControlTimebase_ConfigurationMatches(void)
 {
-  /* 启动前同时核对时钟树、TIM7 参数和中断优先级，避免局部改参后静默漂移。 */
+  /*
+   * 三层配置必须一致：真实 RCC 时钟、CubeMX 生成的 htim7 参数、robot_config.h 设计值。
+   * 还要检查中断优先级，因为 TIM7 回调会调用 FreeRTOS FromISR API；频率一致但优先级
+   * 越过内核许可边界同样属于不可启动配置。
+   */
   const uint32_t pclk1_hz = HAL_RCC_GetPCLK1Freq();
   const uint32_t actual_timer_clock_hz =
     (RCC->CFGR & RCC_CFGR_PPRE1) == 0U ? pclk1_hz : pclk1_hz * 2U;
@@ -70,6 +84,10 @@ static bool AppControlTimebase_ConfigurationMatches(void)
 
 BspStatus AppControlTimebase_Start(void)
 {
+  /*
+   * DWT CYCCNT 提供 168 MHz 自由运行时间戳。32 位计数约 25.6 秒回绕一次，但所有短间隔
+   * 使用无符号减法，可在不跨越一个完整计数周期的前提下自然处理回绕。
+   */
   if (timebase_started) {
     return BSP_BUSY;
   }
@@ -93,7 +111,10 @@ BspStatus AppControlTimebase_Start(void)
   __HAL_TIM_SET_COUNTER(&htim7, 0U);
   __HAL_TIM_CLEAR_FLAG(&htim7, TIM_FLAG_UPDATE);
 
-  /* 先登记接收任务并置启动标志，再开启定时器，关闭首个通知无接收者的窗口。 */
+  /*
+   * 登记任务、设置 started 与 HAL 启动放在同一临界区：若先开定时器，首个中断可能在
+   * handle 尚为空时丢失；若 HAL 启动失败，则在退出临界区前完整撤销所有权。
+   */
   taskENTER_CRITICAL();
   AppControlTimebase_ResetState();
   previous_irq_timestamp_cycles = DWT->CYCCNT;
@@ -133,7 +154,10 @@ BspStatus AppControlTimebase_Wait(AppControlTick *tick)
     return BSP_INVALID_ARG;
   }
 
-  /* 计数型通知保留迟到周期数，带序号缓冲区再把通知与对应快照配对。 */
+  /*
+   * pdTRUE 取走并清零累计通知值，因此 notification_count 就是自上次成功等待后的节拍数。
+   * 唤醒时间在返回后立即采集，尽量不把快照复制开销计入调度延迟。
+   */
   const uint32_t notification_count = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
   const uint32_t wake_cycles = DWT->CYCCNT;
   AppControlTickSample sample;
@@ -170,7 +194,11 @@ void AppControlTimebase_OnTimerElapsedFromIsr(void)
     return;
   }
 
-  /* 中断内只做定长采集、发布和通知，不执行测速、状态机或控制律。 */
+  /*
+   * 中断入口时间由向量钩子提前捕获。相邻周期差使用 uint32_t 模减法；累计相位扩展到
+   * uint64_t 并饱和，用于发现定时器更新标志折叠导致的漏中断。中断随后固定读取四个
+   * 16 位计数器并发布，不执行任何与命令数量或算法迭代次数相关的工作。
+   */
   const uint32_t now_cycles = irq_entry_timestamp_cycles;
   const uint32_t irq_period_cycles = now_cycles - previous_irq_timestamp_cycles;
   if (elapsed_cycles_since_start > (UINT64_MAX - (uint64_t)irq_period_cycles)) {

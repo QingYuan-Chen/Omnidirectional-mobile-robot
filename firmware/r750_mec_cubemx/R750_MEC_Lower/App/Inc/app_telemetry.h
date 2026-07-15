@@ -9,13 +9,25 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* 遥测采用定长缓冲区和整数格式化，禁止动态分配及浮点文本格式化。 */
+/*
+ * 面向 UART4 临时试验链路的长度有界文本遥测格式化器。
+ *
+ * 模块只把调用者提供的一致快照编码到调用者缓冲区，不读取全局状态、不发送串口、
+ * 不分配动态内存，也不引入 printf 或浮点文本格式化。帧以换行结束，字段组和顺序固定，
+ * 正式层级由树莓派直接解析，电脑调参端经树莓派转发；临时板测直连不改变系统层级。
+ * 本协议当前用于板级调试，不等同于后续 ROS2 正式协议。
+ */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* 格式化器所需的只读字段集合，由通信任务从一致运行快照构造。 */
+/*
+ * 单帧遥测所需的只读字段集合。
+ * 通信任务应先复制 AppRuntimeSnapshot，再在临界区外构造本结构，确保编码期间不会引用
+ * 正在变化的共享数据。cycle 类时序量保留 CPU 周期单位；电池使用毫伏；IMU 年龄使用
+ * 毫秒；布尔量在文本帧中编码为 0 或 1。
+ */
 typedef struct {
   uint32_t now_ms;
   uint16_t encoder_raw[BSP_MOTOR_COUNT];
@@ -37,7 +49,12 @@ typedef struct {
   bool fault_latched;
 } AppTelemetryInput;
 
-/* 写入一帧换行结尾的定长文本；容量不足时返回失败且长度保持为零。 */
+/*
+ * 把 input 编码成一帧以 '\n' 结尾的文本。
+ * capacity 包含可写数据空间；成功时 length 返回实际帧长，若仍有剩余空间会额外写入
+ * 一个零终止符，但零终止符不计入 length。参数无效或任一字段导致容量不足时返回 false，
+ * length 保持为 0，调用者不得发送缓冲区中的部分帧。
+ */
 bool AppTelemetry_Format(
   const AppTelemetryInput *input,
   uint8_t *buffer,

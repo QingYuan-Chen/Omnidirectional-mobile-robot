@@ -2,7 +2,11 @@
 
 #include "tim.h"
 
-/* 固定映射四路编码器定时器；数组索引必须与 BspMotorId 顺序一致。 */
+/*
+ * 四路编码器逻辑映射固定为 MA→TIM2、MB→TIM3、MC→TIM5、MD→TIM4。
+ * 数组使用指定初始化器绑定枚举值，避免依赖声明顺序猜测；若硬件接线或 CubeMX 定时器
+ * 分配改变，必须同时复核此表、计数方向和上层麦克纳姆轮序号。
+ */
 
 static TIM_HandleTypeDef *const encoder_timers[BSP_MOTOR_COUNT] = {
   [BSP_MOTOR_MA] = &htim2,
@@ -12,6 +16,7 @@ static TIM_HandleTypeDef *const encoder_timers[BSP_MOTOR_COUNT] = {
 };
 
 static uint16_t encoder_last_count[BSP_MOTOR_COUNT];
+/* encoder_last_count 只服务兼容 ReadDelta，不参与 TIM7 快照链的 AppEncoderAccumulator。 */
 
 static bool BspEncoder_IsValid(BspMotorId motor)
 {
@@ -20,6 +25,7 @@ static bool BspEncoder_IsValid(BspMotorId motor)
 
 BspStatus BspEncoder_Init(void)
 {
+  /* 四个定时器均以编码器模式启动全部通道；全部启动后才统一清零基线。 */
   for (uint32_t i = 0; i < BSP_MOTOR_COUNT; ++i) {
     if (HAL_TIM_Encoder_Start(encoder_timers[i], TIM_CHANNEL_ALL) != HAL_OK) {
       return BSP_ERROR;
@@ -45,7 +51,10 @@ int16_t BspEncoder_ReadDelta(BspMotorId motor)
     return 0;
   }
 
-  /* 16 位减法后直接解释为有符号量，仅适用于单周期变化不跨半量程的场景。 */
+  /*
+   * C 的无符号模减法自然处理 0/65535 回绕，再转换为 int16_t 取得最短方向差。该接口没有
+   * 时间戳且基线独立，仅适合低速人工板测；确定性控制必须使用同步 raw 快照链。
+   */
   const uint16_t current = BspEncoder_ReadRaw(motor);
   const int16_t delta = (int16_t)(current - encoder_last_count[motor]);
   encoder_last_count[motor] = current;

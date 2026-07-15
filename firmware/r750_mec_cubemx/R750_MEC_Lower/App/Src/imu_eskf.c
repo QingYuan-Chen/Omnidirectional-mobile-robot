@@ -5,7 +5,13 @@
 #include <math.h>
 #include <string.h>
 
-/* 姿态 ESKF 使用四元数名义状态和六维误差状态，不对输入增加普通低通。 */
+/*
+ * 姿态 ESKF 采用“名义四元数 + 陀螺零偏”和六维小误差状态。
+ *
+ * 每个样本先用未经过普通低通的角速度传播名义姿态与协方差，再把通过多级门控的归一化
+ * 加速度当作重力方向观测。校正量注入名义状态后，用约瑟夫形式和误差重置雅可比更新
+ * 协方差。所有矩阵按行主序存放在结构体固定工作区，无动态内存，也不在栈上创建大矩阵。
+ */
 
 #define IMU_ESKF_INDEX(row, column, width) ((row) * (width) + (column))
 #define IMU_ESKF_GYRO_NOISE_VARIANCE       (4.0e-6f)
@@ -20,6 +26,12 @@
 #define IMU_ESKF_MAX_COVARIANCE             (100.0f)
 #define IMU_ESKF_CONVERGENCE_UPDATES        (100U)
 
+/*
+ * 噪声方差和门限当前是软件候选值，后续应结合静止噪声、振动工况与板测创新统计复核。
+ * ACCEL_GATE 先按物理模长拒绝明显线加速度；INNOVATION_GATE 按重力方向差拒绝大姿态矛盾；
+ * NIS_GATE 再结合当前协方差做统计一致性检查。三层门控都通过才允许校正。
+ */
+
 static float ImuEskf_VectorNorm(const float vector[3])
 {
   return sqrtf(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
@@ -27,6 +39,7 @@ static float ImuEskf_VectorNorm(const float vector[3])
 
 static void ImuEskf_QuaternionNormalize(float quaternion[4])
 {
+  /* 每次传播与误差注入后归一化；范数过小时回退单位姿态，避免除零并保持有限输出。 */
   const float norm = sqrtf(quaternion[0] * quaternion[0] + quaternion[1] * quaternion[1] +
                            quaternion[2] * quaternion[2] + quaternion[3] * quaternion[3]);
   if (norm > 1.0e-8f) {
@@ -44,6 +57,7 @@ static void ImuEskf_QuaternionNormalize(float quaternion[4])
 
 static void ImuEskf_QuaternionMultiply(const float left[4], const float right[4], float result[4])
 {
+  /* Hamilton 乘法，调用顺序为当前名义姿态右乘本周期增量四元数。 */
   result[0] = left[0] * right[0] - left[1] * right[1] - left[2] * right[2] - left[3] * right[3];
   result[1] = left[0] * right[1] + left[1] * right[0] + left[2] * right[3] - left[3] * right[2];
   result[2] = left[0] * right[2] - left[1] * right[3] + left[2] * right[0] + left[3] * right[1];
@@ -52,6 +66,7 @@ static void ImuEskf_QuaternionMultiply(const float left[4], const float right[4]
 
 static void ImuEskf_MatrixMultiply6(const float left[36], const float right[36], float result[36])
 {
+  /* 固定 6×6 矩阵乘法，result 不得与输入别名；调用点使用结构体内不同工作区保证。 */
   for (uint32_t row = 0U; row < 6U; ++row) {
     for (uint32_t column = 0U; column < 6U; ++column) {
       float value = 0.0f;
@@ -65,6 +80,7 @@ static void ImuEskf_MatrixMultiply6(const float left[36], const float right[36],
 
 static void ImuEskf_MatrixMultiplyRightTranspose6(const float left[36], const float right[36], float result[36])
 {
+  /* 计算 left·rightᵀ，供 FPFᵀ、Joseph 项和重置雅可比变换复用。 */
   for (uint32_t row = 0U; row < 6U; ++row) {
     for (uint32_t column = 0U; column < 6U; ++column) {
       float value = 0.0f;
@@ -78,7 +94,11 @@ static void ImuEskf_MatrixMultiplyRightTranspose6(const float left[36], const fl
 
 static bool ImuEskf_Invert3(const float matrix[9], float inverse[9])
 {
-  /* 创新协方差应为正定矩阵，使用三阶乔列斯基分解同时完成合法性检查。 */
+  /*
+   * 创新协方差理论上为对称正定矩阵。三阶 Cholesky 分解在求逆的同时检查三个主元为
+   * 有限正数；任一主元退化就拒绝本次观测，而不是继续用不稳定的通用伴随矩阵求逆。
+   * 分解后对单位矩阵三列分别前代、回代得到 S⁻¹。
+   */
   const float l00_squared = matrix[0];
   if (!isfinite(l00_squared) || l00_squared <= 1.0e-12f) {
     return false;
@@ -118,6 +138,10 @@ static bool ImuEskf_Invert3(const float matrix[9], float inverse[9])
 
 static void ImuEskf_SymmetrizeCovariance(ImuEskf *filter)
 {
+  /*
+   * 浮点矩阵乘法会逐步破坏 P 的严格对称性，这里用上下三角平均恢复对称；对角线再限制
+   * 到有限正区间，抑制负方差、下溢和长期无观测方向的无界增长。
+   */
   for (uint32_t row = 0U; row < 6U; ++row) {
     for (uint32_t column = row + 1U; column < 6U; ++column) {
       const float average = 0.5f * (filter->covariance[IMU_ESKF_INDEX(row, column, 6U)] +
@@ -136,6 +160,7 @@ static void ImuEskf_SymmetrizeCovariance(ImuEskf *filter)
 
 bool ImuEskf_IsStateFinite(const ImuEskf *filter)
 {
+  /* 工作区是中间量，不属于持久滤波状态；有限性检查覆盖名义状态和完整 6×6 协方差。 */
   if (filter == NULL || !filter->initialized) {
     return false;
   }
@@ -159,7 +184,11 @@ bool ImuEskf_IsStateFinite(const ImuEskf *filter)
 
 static void ImuEskf_Predict(ImuEskf *filter, const float angular_rate_rad_s[3], float delta_time_s)
 {
-  /* 名义四元数由去零偏角速度传播，六维误差协方差按线性化模型传播。 */
+  /*
+   * 名义姿态使用去零偏角速度的指数映射传播。角度足够大时使用 sin/cos 精确增量；小角度
+   * 时使用一阶四元数，避免 sin(x)/|omega| 在接近零时数值不稳。随后构造离散一阶状态
+   * 转移 F：左上角为姿态误差的反对称角速度项，右上角把零偏误差耦合到姿态误差。
+   */
   float omega[3];
   for (uint32_t i = 0U; i < 3U; ++i) {
     omega[i] = angular_rate_rad_s[i] - filter->gyro_bias_rad_s[i];
@@ -204,6 +233,7 @@ static void ImuEskf_Predict(ImuEskf *filter, const float angular_rate_rad_s[3], 
   }
 
   ImuEskf_MatrixMultiply6(transition, filter->covariance, filter->work_b);
+  /* P=F·P·Fᵀ+Q·dt；陀螺白噪声进入姿态块，零偏随机游走进入零偏块。 */
   ImuEskf_MatrixMultiplyRightTranspose6(filter->work_b, transition, filter->covariance);
   for (uint32_t i = 0U; i < 3U; ++i) {
     filter->covariance[IMU_ESKF_INDEX(i, i, 6U)] += IMU_ESKF_GYRO_NOISE_VARIANCE * delta_time_s;
@@ -216,7 +246,10 @@ static bool ImuEskf_CorrectAcceleration(ImuEskf *filter,
                                         const float acceleration_mps2[3],
                                         bool *vibration_high)
 {
-  /* 仅在加速度模长和创新检验通过时把重力方向作为姿态观测。 */
+  /*
+   * 校正阶段只使用加速度方向，不使用幅值估计姿态。先检查模长接近标准重力并给出振动
+   * 标志，再归一化为单位观测；当前四元数预测车体系重力方向，二者之差构成创新。
+   */
   const float acceleration_norm = ImuEskf_VectorNorm(acceleration_mps2);
   const float norm_error = fabsf(acceleration_norm - ROBOT_CONFIG_STANDARD_GRAVITY_MPS2);
   *vibration_high = norm_error > IMU_ESKF_VIBRATION_THRESHOLD_MPS2;
@@ -248,6 +281,7 @@ static bool ImuEskf_CorrectAcceleration(ImuEskf *filter,
   }
 
   float *h = filter->measurement_jacobian;
+  /* H=[[g]×, 0]：按本实现误差定义，重力方向对小姿态误差敏感，对零偏没有直接观测。 */
   memset(h, 0, sizeof(filter->measurement_jacobian));
   h[IMU_ESKF_INDEX(0U, 1U, 6U)] = -predicted_gravity[2];
   h[IMU_ESKF_INDEX(0U, 2U, 6U)] = predicted_gravity[1];
@@ -268,6 +302,10 @@ static bool ImuEskf_CorrectAcceleration(ImuEskf *filter,
   }
 
   const float normalized_error = norm_error / ROBOT_CONFIG_STANDARD_GRAVITY_MPS2;
+  /*
+   * 即使模长仍在硬门限内，偏离重力越多，越可能含线加速度，因此按归一化模长误差平方
+   * 放大测量噪声 R，使卡尔曼增益平滑减小而不是只靠硬开关。
+   */
   const float measurement_variance = IMU_ESKF_ACCEL_NOISE_VARIANCE *
                                      (1.0f + 25.0f * normalized_error * normalized_error);
   float *innovation_covariance = filter->innovation_covariance;
@@ -295,6 +333,7 @@ static bool ImuEskf_CorrectAcceleration(ImuEskf *filter,
   }
 
   float nis = 0.0f;
+  /* NIS=创新ᵀS⁻¹创新，用当前不确定度归一化残差；超过三维卡方门限则拒绝观测。 */
   for (uint32_t row = 0U; row < 3U; ++row) {
     float weighted_innovation = 0.0f;
     for (uint32_t column = 0U; column < 3U; ++column) {
@@ -326,6 +365,10 @@ static bool ImuEskf_CorrectAcceleration(ImuEskf *filter,
     }
   }
   const float correction_norm = ImuEskf_VectorNorm(correction);
+  /*
+   * 只限制前三维姿态校正的模长，防止单次观测把名义四元数拉动过大；零偏校正随后还会
+   * 单独限制在 ±0.5 rad/s 的物理保护范围。
+   */
   if (correction_norm > IMU_ESKF_MAX_CORRECTION_RAD) {
     const float scale = IMU_ESKF_MAX_CORRECTION_RAD / correction_norm;
     for (uint32_t i = 0U; i < 3U; ++i) {
@@ -352,7 +395,11 @@ static bool ImuEskf_CorrectAcceleration(ImuEskf *filter,
     }
   }
 
-  /* 约瑟夫形式保持协方差半正定，再用误差注入后的重置雅可比换坐标。 */
+  /*
+   * 约瑟夫形式 P=(I-KH)P(I-KH)ᵀ+KRKᵀ 比简化式 P=(I-KH)P 更能在单精度下保持
+   * 对称半正定。误差已经注入名义四元数后，误差坐标原点改变，再用一阶 reset Jacobian
+   * 把协方差变换到新的零误差切空间。
+   */
   float *joseph = filter->work_a;
   memset(joseph, 0, sizeof(filter->work_a));
   for (uint32_t row = 0U; row < 6U; ++row) {
@@ -408,6 +455,10 @@ bool ImuEskf_Init(ImuEskf *filter, const float acceleration_mps2[3], const float
     return false;
   }
 
+  /*
+   * 静止重力只能确定 roll/pitch，初始 yaw 选为 0。姿态协方差中 yaw 给较大不确定度 1.0，
+   * roll/pitch 与零偏从 1e-2 起步，明确表达航向不可观而不是伪装成已知。
+   */
   memset(filter, 0, sizeof(*filter));
   const float roll = atan2f(acceleration_mps2[1], acceleration_mps2[2]);
   const float pitch = atan2f(-acceleration_mps2[0],
@@ -439,6 +490,11 @@ bool ImuEskf_Update(ImuEskf *filter,
                     bool *accel_update_used,
                     bool *vibration_high)
 {
+  /*
+   * delta_time_s 上限 0.1 s 是数值安全边界；应用层还会按正常 ODR 把实际使用 dt 限到更小。
+   * 加速度校正被门控拒绝属于正常预测模式，因此函数仍返回 true；只有输入契约、预测后
+   * 非有限或最终状态非有限才返回 false。
+   */
   if (filter == NULL || angular_rate_rad_s == NULL || acceleration_mps2 == NULL || accel_update_used == NULL ||
       vibration_high == NULL || !filter->initialized || !isfinite(delta_time_s) || delta_time_s <= 0.0f ||
       delta_time_s > 0.1f) {
@@ -466,6 +522,7 @@ void ImuEskf_GetEulerRad(const ImuEskf *filter, float euler_rad[3])
   const float qy = filter->quaternion[2];
   const float qz = filter->quaternion[3];
   euler_rad[0] = atan2f(2.0f * (qw * qx + qy * qz), 1.0f - 2.0f * (qx * qx + qy * qy));
+  /* pitch 的 asin 参数受浮点舍入影响可能略超 [-1,1]，先限幅避免生成 NaN。 */
   float pitch_argument = 2.0f * (qw * qy - qz * qx);
   if (pitch_argument > 1.0f) {
     pitch_argument = 1.0f;
@@ -478,5 +535,6 @@ void ImuEskf_GetEulerRad(const ImuEskf *filter, float euler_rad[3])
 
 bool ImuEskf_IsConverged(const ImuEskf *filter)
 {
+  /* 收敛门只统计被实际接受的重力校正，不把纯陀螺预测或被门控拒绝的样本计入。 */
   return filter != NULL && filter->initialized && filter->accel_update_count >= IMU_ESKF_CONVERGENCE_UPDATES;
 }

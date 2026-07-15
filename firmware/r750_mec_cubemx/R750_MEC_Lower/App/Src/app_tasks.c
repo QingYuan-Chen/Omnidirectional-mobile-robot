@@ -20,7 +20,15 @@
 
 #include <string.h>
 
-/* 任务编排层定义数据所有权、任务优先级、心跳、安全仲裁和运行快照发布。 */
+/*
+ * 任务编排层是各纯算法模块、BSP 与 RTOS 之间的唯一集成边界。
+ *
+ * 五个长期任务各自拥有私有状态，只通过定长消息队列、事件标志和 runtime_snapshot 交换
+ * 信息。控制任务由 TIM7 确定性唤醒；安全任务按窗口清点心跳并拥有常规执行器覆盖权；
+ * 通信和 IMU 任务即使遇到链路/传感器错误也继续服务与上报心跳，让数据故障和任务失联
+ * 能被分开诊断。通信 ESTOP 和任一任务失败也可直接紧急锁存；任何内部契约破坏都收敛
+ * 到全局故障锁存和电机紧急空转。
+ */
 
 #define APP_EVENT_START             (1UL << 0U)
 #define APP_EVENT_CONTROL_HEARTBEAT (1UL << 1U)
@@ -49,6 +57,12 @@ _Static_assert(ROBOT_CONFIG_TELEMETRY_PERIOD_MS > 0U,
 static osEventFlagsId_t runtime_events;
 static osMessageQueueId_t motor_command_queue;
 static osThreadId_t task_handles[APP_TASK_COUNT];
+/*
+ * runtime_snapshot 按字段组划分单一写入者，但整结构会被多个读取者复制。短临界区只用于
+ * 内存复制或失败路径的安全标志更新，禁止在 taskENTER_CRITICAL 内调用可能阻塞的
+ * HAL/RTOS 接口。安全任务的常规策略和通信 ESTOP 则分别在各自调度器挂起区串行化。
+ * 执行器仲裁另用 vTaskSuspendAll，允许 TIM7 中断继续到达但阻止控制与安全任务互相切换。
+ */
 static AppRuntimeSnapshot runtime_snapshot;
 
 static void AppTasks_Control(void *argument);
@@ -75,6 +89,10 @@ static void AppTasks_FillTelemetryInput(
   AppTelemetryInput *input);
 
 static const osThreadAttr_t task_attributes[APP_TASK_COUNT] = {
+  /*
+   * 控制与安全同为高优先级，靠执行器仲裁区保证最终安全门原子性；通信与 IMU 次一级，
+   * 监控最低。栈大小以字节给 CMSIS-RTOS，运行后由 Monitor 持续记录剩余空间供板测复核。
+   */
   [APP_TASK_CONTROL] = {.name = "controlTask", .stack_size = APP_CONTROL_STACK_BYTES, .priority = osPriorityHigh},
   [APP_TASK_SAFETY] = {.name = "safetyTask", .stack_size = APP_SAFETY_STACK_BYTES, .priority = osPriorityHigh},
   [APP_TASK_COMM] = {.name = "commTask", .stack_size = APP_COMM_STACK_BYTES, .priority = osPriorityAboveNormal},
@@ -92,13 +110,17 @@ static osThreadFunc_t const task_functions[APP_TASK_COUNT] = {
 
 static bool AppTasks_WaitForStart(void)
 {
-  /* 所有任务创建成功后统一放行，避免部分任务先运行而依赖对象尚未就绪。 */
+  /*
+   * START 使用 osFlagsNoClear，成为一次设置、所有任务都可观察的启动闩锁。任何任务等待
+   * 失败都视为 RTOS 基础设施故障，不能单独带病继续。
+   */
   const uint32_t flags = osEventFlagsWait(runtime_events, APP_EVENT_START, osFlagsWaitAny | osFlagsNoClear, osWaitForever);
   return (flags & osFlagsError) == 0U;
 }
 
 static void AppTasks_StopCreatedThreads(void)
 {
+  /* 创建中途失败的逆向清理路径；只处理已经非空的句柄，最终恢复可再次 Create 的状态。 */
   for (uint32_t i = 0U; i < APP_TASK_COUNT; ++i) {
     if (task_handles[i] != NULL) {
       (void)osThreadTerminate(task_handles[i]);
@@ -119,6 +141,10 @@ static void AppTasks_StopCreatedThreads(void)
 
 static _Noreturn void AppTasks_FailCurrentThread(void)
 {
+  /*
+   * 运行期不可恢复故障的统一收敛点。先在临界区发布禁止与锁存，再停止控制时基并关闭
+   * 电机 PWM。当前任务退出后不尝试局部重建，因为其他任务可能已经依赖其数据所有权。
+   */
   taskENTER_CRITICAL();
   runtime_snapshot.motion_inhibited = true;
   runtime_snapshot.fault_latched = true;
@@ -160,6 +186,10 @@ static uint32_t AppTasks_SumUartTxFaults(const BspUartStats *stats)
 
 static void AppTasks_LatchCommEstop(void)
 {
+  /*
+   * ESTOP 绕过普通命令队列和控制节拍，直接锁存共享安全状态并关闭 PWM。挂起调度器期间
+   * TIM7 中断仍可运行，但控制任务不能在“写锁存—紧急空转”之间提交新的普通 PWM。
+   */
   vTaskSuspendAll();
   runtime_snapshot.motion_inhibited = true;
   runtime_snapshot.fault_latched = true;
@@ -204,7 +234,10 @@ static bool AppTasks_QueueMotorCommand(
       communication->command_queue_drop_count, 1U);
     return false;
   }
-  /* 两阶段提交：只有队列真正接收命令后才推进协议序号，队满可原序号重试。 */
+  /*
+   * 两阶段提交把“命令副本进入队列”和“序号成为防重放基线”组成事务。若 Commit 在入队
+   * 成功后仍失败，说明通信解析与队列状态发生内部不一致，必须按系统故障处理而非丢命令。
+   */
   if (!AppCommProtocol_CommitSequence(protocol, command)) {
     AppTasks_FailCurrentThread();
   }
@@ -216,6 +249,10 @@ static void AppTasks_FillTelemetryInput(
   uint32_t now_ms,
   AppTelemetryInput *input)
 {
+  /*
+   * 只从已经一致复制的运行快照投影遥测字段，格式化器不接触共享全局。UART 错误和发送
+   * 故障在这里做饱和汇总，同时保留环形缓冲溢出与命令队列丢弃等独立字段。
+   */
   memset(input, 0, sizeof(*input));
   input->now_ms = now_ms;
   memcpy(input->encoder_raw, snapshot->encoder_raw, sizeof(input->encoder_raw));
@@ -256,8 +293,9 @@ static BspStatus AppTasks_CommitControlMotorOutput(
   BspStatus status = BSP_OK;
 
   /*
-   * 任务级执行器仲裁区：不中断 TIM7 ISR，只阻止控制任务与安全任务
-   * 在“最终安全门复核—PWM 提交”之间互相切换。区域内不得加入阻塞调用。
+   * 任务级执行器仲裁区：不中断 TIM7 ISR，只阻止控制任务与安全任务在“读取最终安全门
+   * →推进状态机→提交 PWM→发布电机快照”之间互相切换。这样安全任务不可能在控制任务
+   * 读取旧的 motion_inhibited 后、真正写 PWM 前插入。区域内不得加入阻塞调用或格式化。
    */
   vTaskSuspendAll();
   const bool motion_inhibited = runtime_snapshot.motion_inhibited;
@@ -294,7 +332,10 @@ static BspStatus AppTasks_ApplyMotorOutput(const AppMotorOpenLoopOutput *output)
     return BSP_OK;
   }
 
-  /* G1 单电机阶段只允许 MA 输出，其余三路每个周期都重新强制为空转。 */
+  /*
+   * G1 单电机阶段只有 MA 获得驱动许可；MB、MC、MD 每个非紧急输出周期都重新空转，
+   * 防止先前板测残留比较值或未来代码误写让未受控电机动作。紧急路径已一次性关闭全部 PWM。
+   */
   BspMotor_Coast(BSP_MOTOR_MB);
   BspMotor_Coast(BSP_MOTOR_MC);
   BspMotor_Coast(BSP_MOTOR_MD);
@@ -315,6 +356,10 @@ static BspStatus AppTasks_ApplyMotorOutput(const AppMotorOpenLoopOutput *output)
 
 BspStatus AppTasks_Create(void)
 {
+  /*
+   * 创建顺序为共享事件→定长命令队列→全部任务→START 闩锁。任务虽然可能创建后立即获得
+   * 调度，但首条语句会等待 START，因此不会访问尚未创建完的句柄数组或同步对象。
+   */
   if (runtime_events != NULL || motor_command_queue != NULL) {
     return BSP_BUSY;
   }
@@ -373,6 +418,10 @@ static void AppTasks_Control(void *argument)
   }
 
   const uint32_t motor_started_at_ms = HAL_GetTick();
+  /*
+   * 启动时先用 NONE 请求提交一次安全默认输出，再读取编码器基线和启动时序。这样首个
+   * TIM7 周期不会把上电计数当作增量，也不会在状态机尚未初始化时沿用硬件残留输出。
+   */
   AppMotorOpenLoop motor_open_loop;
   AppMotorOpenLoop_Init(&motor_open_loop, motor_started_at_ms);
   const AppMotorOpenLoopRequest no_motor_request = {
@@ -409,7 +458,10 @@ static void AppTasks_Control(void *argument)
       AppTasks_FailCurrentThread();
     }
 
-    /* 发布的是上一个已经完整结束的控制周期；本次发布开销计入当前周期 WCET。 */
+    /*
+     * timing_snapshot 只能在 RecordComplete 后代表完整周期，因此延迟到下一次唤醒发布。
+     * 发布与心跳开销发生在新周期内，自然计入新周期执行时间，不会人为漏掉诊断成本。
+     */
     if (heartbeat_pending) {
       AppControlTimingSnapshot timing_snapshot;
       if (!AppControlTiming_GetSnapshot(&control_timing, &timing_snapshot)) {
@@ -442,7 +494,10 @@ static void AppTasks_Control(void *argument)
     memcpy(runtime_snapshot.encoder_total, encoder_total, sizeof(encoder_total));
     taskEXIT_CRITICAL();
 
-    /* 每个 TIM7 节拍最多消费一条命令，命令洪泛不能无限拉长控制周期。 */
+    /*
+     * 消息队列只做一次零等待 Get，保证每个确定性节拍最多推进一条命令。发送端洪泛只会
+     * 填满有限队列并留下 drop 计数，不会把控制周期变成无界 while 循环。
+     */
     AppMotorOpenLoopRequest motor_request = no_motor_request;
     const osStatus_t command_status = osMessageQueueGet(
       motor_command_queue, &motor_request, NULL, 0U);
@@ -475,9 +530,13 @@ static void AppTasks_Safety(void *argument)
   AppSafetyPolicy safety_policy;
   AppSafetyPolicy_Init(&safety_policy);
   vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(ROBOT_CONFIG_SAFETY_PERIOD_MS));
+  /* 首次先等待完整检查窗，避免任务刚启动时因各任务尚未来得及置心跳而产生虚假缺失。 */
 
   for (;;) {
-    /* 一次清除同时取得清除前位值，避免先读后清期间到达的新心跳被误删。 */
+    /*
+     * osEventFlagsClear 的返回值就是清除前快照，一次原子操作完成“取本窗心跳并开下一窗”。
+     * 若先 Get 再 Clear，两者之间到达的新心跳会被清除并错误计入下一窗缺失。
+     */
     const uint32_t flags = osEventFlagsClear(
       runtime_events, APP_EVENT_CRITICAL_HEARTBEATS);
     const bool tasks_healthy = (flags & osFlagsError) == 0U &&
@@ -486,7 +545,15 @@ static void AppTasks_Safety(void *argument)
     AppSafetyPolicyOutput safety_output;
     bool policy_updated;
     vTaskSuspendAll();
+    /*
+     * 在同一调度仲裁区读取 IMU/外部锁存、更新策略、发布安全状态并执行空转。控制任务无法
+     * 在状态发布和硬件覆盖之间插入，但中断仍保持运行，时基可记录安全处理带来的任务延迟。
+     */
     const bool imu_healthy = runtime_snapshot.imu.health == APP_IMU_HEALTH_HEALTHY;
+    /*
+     * 当前策略只按 health 判定，尚未同时检查 DATA_VALID/DATA_STALE/sample_age；持续无新
+     * 样本但无总线错误时可能仍保持 HEALTHY，此处需要后续安全修复，不能视为完整数据门。
+     */
     policy_updated = AppSafetyPolicy_Update(
       &safety_policy,
       tasks_healthy,
@@ -534,6 +601,7 @@ static void AppTasks_Comm(void *argument)
 
   TickType_t last_wake = xTaskGetTickCount();
   for (;;) {
+    /* 每 2 ms 先服务 UART 恢复与发送，再一次性清空当前已接收字节，解析器本身不阻塞。 */
     BspUart_Service();
 
     uint8_t byte;
@@ -545,7 +613,10 @@ static void AppTasks_Comm(void *argument)
         continue;
       }
       if (command.type == APP_COMM_COMMAND_ESTOP) {
-        /* 急停绕过普通有序队列，立即进入复位恢复型故障锁存。 */
+        /*
+         * ESTOP 不带序号且具有最高优先级，绕过可能已满的普通队列立即锁存；STATUS 只要求
+         * 尽快发一帧快照。其余运动命令必须经过队列与两阶段序号提交。
+         */
         communication.estop_command_count = AppTasks_AddSaturated(
           communication.estop_command_count, 1U);
         AppTasks_LatchCommEstop();
@@ -562,7 +633,10 @@ static void AppTasks_Comm(void *argument)
     const bool periodic_telemetry_due =
       (now_ms - last_telemetry_ms) >= ROBOT_CONFIG_TELEMETRY_PERIOD_MS;
     if (periodic_telemetry_due) {
-      /* ADC 只随 20 ms 周期遥测采样，强制状态上报复用最近一次电压快照。 */
+      /*
+       * ADC 是轮询式独占资源，只绑定周期遥测节拍以限制执行时间与采样负载。STATUS 强制
+       * 遥测不会额外触发 ADC，避免命令洪泛把通信任务变成连续阻塞采样。
+       */
       last_telemetry_ms = now_ms;
       uint16_t battery_millivolts = 0U;
       const BspStatus battery_status = BspAdc_ReadBatteryMillivolts(
@@ -579,6 +653,10 @@ static void AppTasks_Comm(void *argument)
     }
 
     if (periodic_telemetry_due || force_telemetry) {
+      /*
+       * 先在短临界区复制完整运行快照，再在临界区外构造和格式化帧。发送接口复制帧内容，
+       * 因此静态 telemetry_frame 在成功入队后可由下一周期安全复用。
+       */
       force_telemetry = false;
       (void)AppCommProtocol_GetStats(&protocol, &communication.protocol);
       (void)BspUart_GetStats(BSP_UART_TTL, &communication.uart_ttl);
@@ -626,6 +704,10 @@ static void AppTasks_Imu(void *argument)
   }
 
   for (;;) {
+    /*
+     * 数据就绪外部中断通常触发立即处理；两倍任务周期的超时保证即使 EXTI 丢失或处于
+     * 非阻塞退避，任务仍周期醒来刷新 sample_age_ms、健康状态与任务心跳。
+     */
     (void)osThreadFlagsWait(
       APP_IMU_THREAD_FLAG_DATA_READY, osFlagsWaitAny, pdMS_TO_TICKS(ROBOT_CONFIG_IMU_PERIOD_MS * 2U));
     AppImuOutput output;
@@ -635,7 +717,10 @@ static void AppTasks_Imu(void *argument)
     runtime_snapshot.imu = output;
     taskEXIT_CRITICAL();
 
-    /* 读取失败或处于非阻塞退避都仍上报任务心跳，健康等级由 IMU 输出单独表达。 */
+    /*
+     * Process 返回值描述本次数据机会，不能代表任务存活。无论 BUSY、退避还是数据故障，
+     * 只要循环仍执行就置 IMU_HEARTBEAT；安全任务再独立读取 output.health 决定是否允许运动。
+     */
     (void)osEventFlagsSet(runtime_events, APP_EVENT_IMU_HEARTBEAT);
     (void)status;
   }
@@ -643,6 +728,7 @@ static void AppTasks_Imu(void *argument)
 
 void HAL_GPIO_EXTI_Callback(uint16_t gpio_pin)
 {
+  /* EXTI 只置线程标志，不在中断中访问 I2C 或运行 ESKF；任务尚未创建时安全忽略早期中断。 */
   if (gpio_pin == IMU_INT_Pin && task_handles[APP_TASK_IMU] != NULL) {
     (void)osThreadFlagsSet(task_handles[APP_TASK_IMU], APP_IMU_THREAD_FLAG_DATA_READY);
   }
@@ -657,6 +743,10 @@ static void AppTasks_Monitor(void *argument)
 
   TickType_t last_wake = xTaskGetTickCount();
   for (;;) {
+    /*
+     * 栈余量是 CMSIS-RTOS 报告的历史最小剩余字节，用于板测确认静态栈预算；LED1 翻转只
+     * 表示低优先级监控任务仍得到调度，不参与关键心跳或安全判定。
+     */
     uint32_t stack_free_bytes[APP_TASK_COUNT];
     for (uint32_t i = 0U; i < APP_TASK_COUNT; ++i) {
       stack_free_bytes[i] = osThreadGetStackSpace(task_handles[i]);

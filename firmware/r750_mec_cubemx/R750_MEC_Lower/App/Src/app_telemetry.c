@@ -4,9 +4,15 @@
 #include <stddef.h>
 #include <string.h>
 
-/* 遥测格式化器使用固定标签和整数文本，保证内存占用及最坏帧长可计算。 */
+/*
+ * 遥测格式化器把一致运行快照编码为固定标签、逗号分隔、换行结束的整数文本帧。
+ * 所有追加函数共享 writer.valid 失败锁存：一旦容量不足，后续追加都变成空操作，最终
+ * Format 返回 false 且 length 保持零，避免调用者误发截断帧。实现不使用 printf，因而
+ * 不引入不可控格式化开销、浮点支持或动态内存。
+ */
 
 typedef struct {
+  /* capacity 是缓冲区总可写字节数，length 始终指向下一写入位置，valid 为整帧事务状态。 */
   uint8_t *buffer;
   uint16_t capacity;
   uint16_t length;
@@ -15,6 +21,7 @@ typedef struct {
 
 static void AppTelemetry_AppendByte(AppTelemetryWriter *writer, uint8_t value)
 {
+  /* 最小写入原语负责唯一的逐字节边界检查，失败后锁存 valid=false。 */
   if (!writer->valid || writer->length >= writer->capacity) {
     writer->valid = false;
     return;
@@ -27,6 +34,7 @@ static void AppTelemetry_AppendLiteral(
   AppTelemetryWriter *writer,
   const char *literal)
 {
+  /* 字面量先整体检查剩余容量，再一次 memcpy，保证不会只写入标签前缀。 */
   if (!writer->valid || literal == NULL) {
     writer->valid = false;
     return;
@@ -42,7 +50,10 @@ static void AppTelemetry_AppendLiteral(
 
 static void AppTelemetry_AppendU64(AppTelemetryWriter *writer, uint64_t value)
 {
-  /* 手工整数转换使帧长和执行路径可界定，不引入格式化库及浮点支持。 */
+  /*
+   * uint64_t 最多 20 个十进制数字，先逆序放入固定局部数组，再反向追加。do-while 保证
+   * 数值 0 也输出一个字符。每个最终字节仍经过统一容量检查。
+   */
   uint8_t digits[20];
   uint16_t count = 0U;
   do {
@@ -64,6 +75,7 @@ static void AppTelemetry_AppendU32(AppTelemetryWriter *writer, uint32_t value)
 
 static void AppTelemetry_AppendI64(AppTelemetryWriter *writer, int64_t value)
 {
+  /* -(INT64_MIN) 会溢出，使用 -(value+1)+1 在无符号域安全取得其幅值。 */
   uint64_t magnitude;
   if (value < 0) {
     AppTelemetry_AppendByte(writer, (uint8_t)'-');
@@ -126,7 +138,13 @@ bool AppTelemetry_Format(
     .valid = true,
   };
 
-  /* 标签顺序固定，树莓派端可按字段组解析并检查帧预算。 */
+  /*
+   * 帧布局固定如下：
+   * T=主机时刻/控制节拍/IRQ 时间，R=四路原始计数，D=四路周期增量，E=四路累计计数，
+   * P=目标/实际 PWM，B=电池毫伏，S=系统安全与电机状态，I=IMU 年龄/健康，
+   * J=中断抖动，L=唤醒延迟/最大执行时间，M=漏周期/超期，C=通信与 ADC 错误。
+   * 标签和字段顺序变化属于线协议变更，必须同步树莓派直接解析端及其转发的电脑调参端。
+   */
   AppTelemetry_AppendLiteral(&writer, "T,");
   AppTelemetry_AppendU32(&writer, input->now_ms);
   AppTelemetry_AppendByte(&writer, (uint8_t)',');
@@ -191,10 +209,12 @@ bool AppTelemetry_Format(
   AppTelemetry_AppendByte(&writer, (uint8_t)'\n');
 
   if (!writer.valid) {
+    /* 失败时不暴露部分长度；调用者据此丢弃整帧并累计 format_error。 */
     return false;
   }
   *length = writer.length;
   if (writer.length < writer.capacity) {
+    /* 零终止符只方便本地调试查看，不属于 UART 帧，发送长度仍以换行结尾。 */
     writer.buffer[writer.length] = 0U;
   }
   return true;
