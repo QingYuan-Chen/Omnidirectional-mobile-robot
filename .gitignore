@@ -6,6 +6,7 @@ CMakeUserPresets.json
 # Build and generated temporary output
 build/
 **/build/
+/captures/
 /tests/build*/
 MXTmpFiles/
 **/MXTmpFiles/

@@ -10,6 +10,18 @@ enable_testing()
 
 set(APP_DIR "${CMAKE_CURRENT_LIST_DIR}/../firmware/r750_mec_cubemx/R750_MEC_Lower/App")
 
+if(WIN32)
+  find_program(POWERSHELL_EXECUTABLE NAMES pwsh.exe powershell.exe REQUIRED)
+  add_test(
+    NAME serial_capture_tools
+    COMMAND
+      "${POWERSHELL_EXECUTABLE}"
+      -NoProfile
+      -ExecutionPolicy Bypass
+      -File "${CMAKE_CURRENT_LIST_DIR}/test_serial_capture.ps1"
+  )
+endif()
+
 add_executable(test_app_debug_uart_config
   test_app_debug_uart_config.c
 )
