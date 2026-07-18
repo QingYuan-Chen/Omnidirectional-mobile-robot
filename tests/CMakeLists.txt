@@ -37,6 +37,13 @@ target_include_directories(test_app_debug_uart_config PRIVATE "${APP_DIR}/Inc" "
 target_compile_options(test_app_debug_uart_config PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
 add_test(NAME app_debug_uart_config COMMAND test_app_debug_uart_config)
 
+add_executable(test_robot_config
+  test_robot_config.c
+)
+target_include_directories(test_robot_config PRIVATE "${APP_DIR}/Inc")
+target_compile_options(test_robot_config PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME robot_config COMMAND test_robot_config)
+
 add_executable(test_app_control_timing
   test_app_control_timing.c
   "${APP_DIR}/Src/app_control_timing.c"

@@ -378,9 +378,10 @@ function Measure-G2CaptureRows {
         error_maxima = $errorMaxima
         g3_readiness = [ordered]@{
             rpm_reported = $false
-            counts_per_wheel_revolution_verified = $false
+            counts_per_wheel_revolution_verified = $true
+            counts_per_wheel_revolution = 122880
             pulse_period_data_available = $false
-            conclusion = 'Keep count-rate units. M/T selection and RPM conversion remain blocked pending powered encoder tests.'
+            conclusion = 'Wheel counts/rev is verified. Keep count-rate units until pulse-period data and the M/T estimator are implemented.'
         }
     }
 

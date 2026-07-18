@@ -107,7 +107,9 @@ Assert-True ($measurement.summary.encoder.channel_1.maximum_count_rate_cps -eq 1
 Assert-True ($measurement.summary.timing.preliminary_thresholds.zero_missed_periods) '零丢周期门槛'
 Assert-True ((Test-G2PreliminaryTimingThresholds `
     -Thresholds $measurement.summary.timing.preliminary_thresholds)) '初步时序门槛汇总'
-Assert-True (-not $measurement.summary.g3_readiness.rpm_reported) '未验证每圈计数前不报告 RPM'
+Assert-True (-not $measurement.summary.g3_readiness.rpm_reported) '速度估计未实现前不报告 RPM'
+Assert-True ($measurement.summary.g3_readiness.counts_per_wheel_revolution_verified) '整圈实测后标记轮端计数已验证'
+Assert-True ($measurement.summary.g3_readiness.counts_per_wheel_revolution -eq 122880) '轮端每圈计数使用实测关闭的 122880'
 
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('g2-tools-test-' + [Guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($temporaryRoot)

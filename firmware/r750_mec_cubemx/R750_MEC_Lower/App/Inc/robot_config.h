@@ -22,13 +22,17 @@
 
 /*
  * 编码器与底盘几何参数。
- * 1024 PPR 与减速比 30 当前来自参考资料，尚未关闭编码器四倍频含义造成的 30720 轮端
- * 计数歧义；77 mm 是车轮名义直径，有效滚动直径仍待测。0.196 m 轮距和 0.160 m 轴距
- * 是参考安装基线，M4 运动学验收前必须按实车几何复测。上述值当前只能支持软件框架和
- * 后续辨识准备，不能作为已验收标定参数。
+ * 原厂 1024 PPR 是 AB 相四倍频前的脉冲数。2026-07-18 对 MA 车轮人工向前转动三整圈，
+ * 完整起止平台累计 -371783 counts，平均绝对值 123927.7 counts/rev；与
+ * 1024×4×30=122880 的偏差约 0.85%，由人工标记对齐和末端轻微回摆解释。77 mm 是
+ * 车轮名义直径，有效滚动直径仍待测。0.196 m 轮距和 0.160 m 轴距是参考安装基线，
+ * M4 运动学验收前必须按实车几何复测。
  */
-#define ROBOT_CONFIG_ENCODER_COUNTS_PER_MOTOR_REV (1024U)
-#define ROBOT_CONFIG_MOTOR_REDUCTION_RATIO        (30U)
+#define ROBOT_CONFIG_ENCODER_PULSES_PER_MOTOR_REV (1024U)
+#define ROBOT_CONFIG_ENCODER_QUADRATURE_FACTOR    (4U)
+#define ROBOT_CONFIG_ENCODER_COUNTS_PER_MOTOR_REV \
+  (ROBOT_CONFIG_ENCODER_PULSES_PER_MOTOR_REV * ROBOT_CONFIG_ENCODER_QUADRATURE_FACTOR)
+#define ROBOT_CONFIG_MOTOR_REDUCTION_RATIO (30U)
 #define ROBOT_CONFIG_ENCODER_COUNTS_PER_WHEEL_REV \
   (ROBOT_CONFIG_ENCODER_COUNTS_PER_MOTOR_REV * ROBOT_CONFIG_MOTOR_REDUCTION_RATIO)
 
