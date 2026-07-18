@@ -213,3 +213,12 @@
 - `test_serial_capture.ps1` 覆盖有效帧、字段数/标签/符号/布尔边界、CSV 转义、默认命令拒绝和计划排序，共 15 项断言，并作为 Windows CTest 项接入 `tools/run_host_tests.ps1`。全量主机测试由 13 项增至 14 项且 14/14 通过；Windows PowerShell 5.1 与 PowerShell 7 均通过脚本离线测试。
 - 使用 Windows PowerShell 5.1、COM6、固件 `bfb60a7` 和 `-SendStatusAtStart` 完成 5 s 实采，产物位于本地 `captures/20260718-161012922_COM6/`：收到 33,060 B、解析 228 行、无非遥测行、无尾部残片、解析错误为 0；板端时间单调增长，发送的 1 条 `STATUS` 在计划后 10 ms 完成，所有通信、命令队列、运动门、失效命令和 ADC 错误字段均保持 0。
 - 本提交不改变固件源代码或 `.ioc`；Debug/Release 仍为 67/67 构建通过，RAM 均为 47,088 B，Flash 分别为 85,372 B 与 48,424 B。提交二据此关闭，后续可直接复用同一采集格式执行 M1.3 深度板测、单电机开环辨识和控制器对比。
+
+## 2026-07-18：完成 M2 板测提交三的无动力试验准备
+
+- 新增 `new_g2_first_motion_plan.ps1` 和 `g2_experiment_lib.ps1`。生成器不访问串口，分别生成 MA 正向或负向首动计划；首动软件临时上限为 200，低于固件 840 上限，并按不超过 400 ms 的间隔插入保活 PWM，避免越过 500 ms 命令超时。
+- 每份计划包含待执行 CSV 和 JSON 清单，固定以 `STATUS` 开始/结束，只含一次 ARM/STOP，不包含 `ESTOP`。清单默认 `execution_state=not_authorized`，电机动力、极性与共地、MA 单通道、车轮悬空、紧急断电和人工授权均保持未确认。
+- 新增 `analyze_g2_capture.ps1`。分析前强制闭合原始字节、遥测行、命令行及解析计数；随后输出板端采样间隔、控制 tick 差、时序初查、PWM、电池、四路编码器累计差与 counts/s，以及全部通信/ADC 错误最大值。每圈计数和脉冲周期未验证前明确保持 `G3Ready=false`，不生成伪 RPM。
+- 使用提交二的 229 行无动力采集完成真实离线验证：板端跨度 4,994 ms，遥测间隔主体为 22 ms；累计最大 IRQ 抖动约为控制周期 0.1405%，最大 WCET 约为 7.0929%，漏周期和截止期增量均为 0。该结果只证明工具链和明显时序阻断项正常，50 Hz 快照不能替代完整 1 kHz P99 分布验收。
+- 生成 `dryrun_positive_pwm100` 干跑计划验证落盘格式，共 8 条命令，状态保持 `not_authorized`；整个提交未打开 COM6、未发送 `ARM/PWM/STOP/ESTOP`、未接入电机动力。完整执行门和后续顺序见 `docs/g2_g3_experiment_procedure.md`。
+- G2/G3 工具在 Windows PowerShell 5.1 与 PowerShell 7 下均为 19 项断言通过，并作为新 CTest 项把统一主机测试扩展为 15/15。Debug/Release 仍为 67/67，RAM 均为 47,088 B，Flash 分别为 85,372 B 与 48,424 B；本提交未修改固件源代码或 `.ioc`。

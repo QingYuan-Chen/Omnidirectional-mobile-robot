@@ -20,6 +20,14 @@ if(WIN32)
       -ExecutionPolicy Bypass
       -File "${CMAKE_CURRENT_LIST_DIR}/test_serial_capture.ps1"
   )
+  add_test(
+    NAME g2_experiment_tools
+    COMMAND
+      "${POWERSHELL_EXECUTABLE}"
+      -NoProfile
+      -ExecutionPolicy Bypass
+      -File "${CMAKE_CURRENT_LIST_DIR}/test_g2_experiment_tools.ps1"
+  )
 endif()
 
 add_executable(test_app_debug_uart_config
