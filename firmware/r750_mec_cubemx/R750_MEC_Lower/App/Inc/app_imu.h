@@ -118,6 +118,14 @@ BspStatus AppImu_Calibrate(void);
  * 写入最新快照并更新 sample_age_ms，调用者不得因 BUSY 或错误而停止 IMU 任务心跳。
  */
 BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output);
+/*
+ * 使用调用时刻重新核验 IMU 是否可作为运动许可条件。
+ * 判据要求健康、标定、有效、ESKF 初始化并收敛、时间戳与倾角有效，且按 last_good_tick_ms
+ * 计算的实时年龄严格小于 20 ms。调用者不得只信任快照中的 sample_age_ms，因为快照发布
+ * 与实际控制时刻之间仍可能经过数毫秒。正常健康运行不要求每帧都使用加速度观测，也不因
+ * 单帧高振动直接禁止运动；严格加速度与振动条件仅用于故障恢复门槛。
+ */
+bool AppImu_IsMotionUsable(const AppImuOutput *output, uint32_t now_ms);
 
 #ifdef __cplusplus
 }

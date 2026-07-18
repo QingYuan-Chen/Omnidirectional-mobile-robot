@@ -67,6 +67,19 @@ target_include_directories(test_app_telemetry PRIVATE "${APP_DIR}/Inc" "${APP_DI
 target_compile_options(test_app_telemetry PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
 add_test(NAME app_telemetry COMMAND test_app_telemetry)
 
+add_executable(test_app_imu
+  test_app_imu.c
+  "${APP_DIR}/Src/app_imu.c"
+  "${APP_DIR}/Src/imu_eskf.c"
+)
+target_include_directories(test_app_imu PRIVATE
+  "${CMAKE_CURRENT_LIST_DIR}/stubs"
+  "${APP_DIR}/Inc"
+  "${APP_DIR}/Bsp/Inc"
+)
+target_compile_options(test_app_imu PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME app_imu COMMAND test_app_imu)
+
 add_executable(test_bsp_uart_tx_queue
   test_bsp_uart_tx_queue.c
   "${APP_DIR}/Bsp/Src/bsp_uart_tx_queue.c"

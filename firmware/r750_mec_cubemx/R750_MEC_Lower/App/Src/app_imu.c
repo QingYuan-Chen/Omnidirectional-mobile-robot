@@ -56,6 +56,12 @@ static bool AppImu_TickIsBefore(uint32_t now_ms, uint32_t target_ms)
   return (int32_t)(now_ms - target_ms) < 0;
 }
 
+static bool AppImu_IsStaleAt(uint32_t now_ms, uint32_t last_good_tick_ms)
+{
+  /* 无符号减法同时覆盖正常计时和 HAL 毫秒计数回绕，20 ms 边界本身即视为陈旧。 */
+  return (now_ms - last_good_tick_ms) >= ROBOT_CONFIG_IMU_STALE_TIMEOUT_MS;
+}
+
 static void AppImu_StartBackoff(uint32_t now_ms)
 {
   /*
@@ -245,12 +251,35 @@ static void AppImu_UpdateStaleState(uint32_t now_ms)
 {
   /*
    * sample_age_ms 表示距最后一次完整接受样本的主机时间，不是芯片时间戳步数。退避、重复
-   * 帧和 BUSY 都会继续增长；超过 20 ms 后 DATA_STALE 置位并强制撤销 DATA_VALID。
+   * 帧和 BUSY 都会继续增长；达到 20 ms 时 DATA_STALE 置位并强制撤销 DATA_VALID。
+   * 陈旧首次出现时进入稳定恢复流程；重复轮询只刷新年龄，不反复清零已经开始的恢复计数。
    */
   imu_output.sample_age_ms = now_ms - imu_output.last_good_tick_ms;
-  if (!imu_calibrated || (now_ms - imu_output.last_good_tick_ms) > ROBOT_CONFIG_IMU_STALE_TIMEOUT_MS) {
+  if (!imu_calibrated) {
     imu_output.flags |= APP_IMU_FLAG_DATA_STALE;
     imu_output.flags &= ~(uint32_t)APP_IMU_FLAG_DATA_VALID;
+    return;
+  }
+
+  if (AppImu_IsStaleAt(now_ms, imu_output.last_good_tick_ms)) {
+    if ((imu_output.flags & APP_IMU_FLAG_DATA_STALE) == 0U) {
+      recovery_required = true;
+      imu_output.stable_sample_count = 0U;
+      imu_output.flags |= APP_IMU_FLAG_SENSOR_DEGRADED;
+      /*
+       * 恢复阶段的 health 会暂时显示 RECOVERING，因此不能只看当前枚举保留严重度；
+       * 根因标志在完整恢复前一直保留，再次陈旧时必须恢复为对应的持久或估计器故障。
+       */
+      if ((imu_output.flags & APP_IMU_FLAG_SENSOR_FAULT) != 0U) {
+        imu_output.health = APP_IMU_HEALTH_PERSISTENT_SENSOR_FAULT;
+      } else if ((imu_output.flags & APP_IMU_FLAG_ESTIMATOR_FAULT) != 0U) {
+        imu_output.health = APP_IMU_HEALTH_ESTIMATOR_FAULT;
+      } else {
+        imu_output.health = APP_IMU_HEALTH_TRANSIENT_DEGRADED;
+      }
+    }
+    imu_output.flags |= APP_IMU_FLAG_DATA_STALE;
+    imu_output.flags &= ~((uint32_t)APP_IMU_FLAG_DATA_VALID | (uint32_t)APP_IMU_FLAG_RECOVERING);
   }
 }
 
@@ -435,6 +464,15 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
   const uint32_t timestamp_step = (sample.sensor_timestamp - previous_sensor_timestamp) & APP_IMU_TIMESTAMP_MASK;
   if (timestamp_step == 0U) {
     imu_output.duplicate_count = AppImu_SaturatingIncrement(imu_output.duplicate_count);
+    if (recovery_required) {
+      /*
+       * 恢复门槛要求连续取得新的稳定帧。重复时间戳不是传感器总线故障，但会中断连续
+       * 样本序列，因此必须清零恢复计数；重复帧本身没有通过质量链，不能把瞬时、持久或
+       * 估计器故障改写为 RECOVERING。已经开始恢复时则保留原有恢复状态和标志。
+       */
+      imu_output.stable_sample_count = 0U;
+      imu_output.flags &= ~(uint32_t)APP_IMU_FLAG_DATA_VALID;
+    }
     AppImu_UpdateStaleState(now_ms);
     *output = imu_output;
     return BSP_BUSY;
@@ -543,4 +581,25 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
   AppImu_CopyFilterState();
   *output = imu_output;
   return BSP_OK;
+}
+
+bool AppImu_IsMotionUsable(const AppImuOutput *output, uint32_t now_ms)
+{
+  if (output == NULL || output->health != APP_IMU_HEALTH_HEALTHY ||
+      AppImu_IsStaleAt(now_ms, output->last_good_tick_ms)) {
+    return false;
+  }
+
+  const uint32_t required_flags =
+    APP_IMU_FLAG_CALIBRATED | APP_IMU_FLAG_DATA_VALID | APP_IMU_FLAG_FILTER_INITIALIZED |
+    APP_IMU_FLAG_FILTER_CONVERGED | APP_IMU_FLAG_TIMESTAMP_VALID | APP_IMU_FLAG_TILT_VALID;
+  const uint32_t rejected_flags =
+    APP_IMU_FLAG_SENSOR_FAULT | APP_IMU_FLAG_DATA_STALE | APP_IMU_FLAG_SENSOR_DEGRADED |
+    APP_IMU_FLAG_RECOVERING | APP_IMU_FLAG_ESTIMATOR_FAULT | APP_IMU_FLAG_SAMPLE_SPIKE;
+
+  /*
+   * 这里不要求当前帧必须使用加速度校正，也不因 VIBRATION_HIGH 单独禁止运动；这两个
+   * 条件只参与故障恢复阶段的连续稳定样本资格，避免正常加减速时把观测门控误当成故障。
+   */
+  return (output->flags & required_flags) == required_flags && (output->flags & rejected_flags) == 0U;
 }
