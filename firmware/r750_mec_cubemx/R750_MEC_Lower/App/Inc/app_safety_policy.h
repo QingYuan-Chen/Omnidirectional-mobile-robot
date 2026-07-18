@@ -7,9 +7,9 @@
 /*
  * 整机安全分级的纯状态机。
  *
- * 安全策略把“本检查窗心跳不全或 IMU 暂时不健康”处理为可恢复运动禁止，把“关键任务
- * 连续多窗失联或外部硬故障”升级为本次上电不可解除的故障锁存。模块只给出制动策略，
- * 不直接操作硬件，便于主机测试验证升级门槛；任务编排层负责在调度仲裁区提交最终输出。
+ * 安全策略把“启动尚未就绪、本检查窗心跳不全或 IMU 暂时不可用”处理为可恢复运动禁止，
+ * 把“关键任务连续多窗失联或外部硬故障”升级为本次上电不可解除的故障锁存。模块只给出
+ * 制动策略，不直接操作硬件，便于主机测试验证升级门槛；任务编排层负责提交最终输出。
  */
 
 #ifdef __cplusplus
@@ -38,20 +38,21 @@ typedef struct {
 } AppSafetyPolicyOutput;
 
 /*
- * 清零策略内部状态。初始化本身不会声明系统健康；任务编排层在首次完整心跳检查前仍应
- * 把全局 motion_inhibited 保持为 true。
+ * 清零策略内部计数和锁存，并把 motion_inhibited 初始化为 true。只有后续更新同时确认
+ * runtime_ready、关键心跳和 IMU 可用后才允许解除。
  */
 void AppSafetyPolicy_Init(AppSafetyPolicy *policy);
 /*
  * 按一个安全检查窗更新故障等级。
- * critical_tasks_healthy 表示该窗全部关键任务都到达过心跳；imu_healthy 只接受 IMU 的
- * HEALTHY 等级；external_fault_latched 可把通信急停等外部硬故障并入锁存。miss_limit
- * 必须大于零。成功写入 output 并返回 true，参数无效返回 false。
+ * runtime_ready 是本次上电已通过启动门的单向锁；critical_tasks_healthy 表示该窗全部
+ * 关键任务都到达过心跳；imu_motion_usable 使用统一实时 IMU 判据。external_fault_latched
+ * 可把通信急停等外部硬故障并入锁存。miss_limit 必须大于零。
  */
 bool AppSafetyPolicy_Update(
   AppSafetyPolicy *policy,
+  bool runtime_ready,
   bool critical_tasks_healthy,
-  bool imu_healthy,
+  bool imu_motion_usable,
   bool external_fault_latched,
   uint32_t critical_miss_limit,
   AppSafetyPolicyOutput *output);

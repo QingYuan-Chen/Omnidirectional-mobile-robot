@@ -6,21 +6,24 @@
 
 /*
  * 安全策略保持为纯状态机，不直接操作电机或 RTOS 对象。
- * 每次调用代表一个固定安全检查窗；调用者负责提供该窗是否收齐全部关键任务心跳、IMU
- * 当前健康等级以及其他模块已锁存的硬故障。分级逻辑因此可在主机测试中独立验证。
+ * 每次调用代表一个固定安全检查窗；调用者负责提供启动是否就绪、该窗是否收齐全部
+ * 关键任务心跳、IMU 实时运动可用性以及其他模块已锁存的硬故障。分级逻辑因此可在
+ * 主机测试中独立验证。
  */
 
 void AppSafetyPolicy_Init(AppSafetyPolicy *policy)
 {
   if (policy != NULL) {
     memset(policy, 0, sizeof(*policy));
+    policy->motion_inhibited = true;
   }
 }
 
 bool AppSafetyPolicy_Update(
   AppSafetyPolicy *policy,
+  bool runtime_ready,
   bool critical_tasks_healthy,
-  bool imu_healthy,
+  bool imu_motion_usable,
   bool external_fault_latched,
   uint32_t critical_miss_limit,
   AppSafetyPolicyOutput *output)
@@ -52,12 +55,12 @@ bool AppSafetyPolicy_Update(
   }
 
   /*
-   * IMU 数据故障不等同于 IMU 任务失联：前者由 health 触发普通可恢复空转，后者会缺失
-   * IMU 心跳并在连续达到门槛后升级硬锁存。这样退避期间持续上报心跳不会误触发硬急停，
-   * 但数据不健康仍然不能运动。
+   * IMU 数据故障不等同于 IMU 任务失联：前者由统一实时可用判据触发普通可恢复空转，
+   * 后者会缺失 IMU 心跳并在连续达到门槛后升级硬锁存。启动未就绪也保持普通禁止，但
+   * 不计入心跳失联。这样退避期间持续心跳不会误触发硬急停，陈旧数据仍不能运动。
    */
   policy->motion_inhibited =
-    policy->fault_latched || !critical_tasks_healthy || !imu_healthy;
+    policy->fault_latched || !runtime_ready || !critical_tasks_healthy || !imu_motion_usable;
   output->normal_coast_request =
     policy->motion_inhibited && !policy->fault_latched;
   return true;

@@ -6,6 +6,7 @@
 #include "app_control_timing.h"
 #include "app_encoder_accumulator.h"
 #include "app_imu.h"
+#include "app_motion_gate.h"
 #include "app_motor_open_loop.h"
 #include "app_safety_policy.h"
 #include "app_telemetry.h"
@@ -58,10 +59,10 @@ static osEventFlagsId_t runtime_events;
 static osMessageQueueId_t motor_command_queue;
 static osThreadId_t task_handles[APP_TASK_COUNT];
 /*
- * runtime_snapshot 按字段组划分单一写入者，但整结构会被多个读取者复制。短临界区只用于
- * 内存复制或失败路径的安全标志更新，禁止在 taskENTER_CRITICAL 内调用可能阻塞的
- * HAL/RTOS 接口。安全任务的常规策略和通信 ESTOP 则分别在各自调度器挂起区串行化。
- * 执行器仲裁另用 vTaskSuspendAll，允许 TIM7 中断继续到达但阻止控制与安全任务互相切换。
+ * runtime_snapshot 的常规数据按字段组划分单一写入者，安全状态和 motion_gate 是经过
+ * 明确定义的多写入者例外。短临界区只用于内存复制或最终失败标志更新，禁止在
+ * taskENTER_CRITICAL 内调用可能阻塞的 HAL/RTOS 接口；其他安全写入与 motion_gate 更新
+ * 使用 vTaskSuspendAll 形成全序，允许 TIM7 中断继续到达但阻止相关任务互相切换。
  */
 static AppRuntimeSnapshot runtime_snapshot;
 
@@ -74,7 +75,8 @@ static BspStatus AppTasks_ApplyMotorOutput(const AppMotorOpenLoopOutput *output)
 static BspStatus AppTasks_CommitControlMotorOutput(
   AppMotorOpenLoop *controller,
   uint32_t now_ms,
-  const AppMotorOpenLoopRequest *request);
+  const AppMotionGatedRequest *request,
+  bool has_queued_request);
 static void AppTasks_LatchCommEstop(void);
 static bool AppTasks_QueueMotorCommand(
   AppCommProtocol *protocol,
@@ -83,6 +85,9 @@ static bool AppTasks_QueueMotorCommand(
 static uint32_t AppTasks_AddSaturated(uint32_t value, uint32_t increment);
 static uint32_t AppTasks_SumUartErrors(const BspUartStats *stats);
 static uint32_t AppTasks_SumUartTxFaults(const BspUartStats *stats);
+static bool AppTasks_RefreshMotionGate(
+  uint32_t now_ms,
+  bool *motion_available);
 static void AppTasks_FillTelemetryInput(
   const AppRuntimeSnapshot *snapshot,
   uint32_t now_ms,
@@ -148,6 +153,7 @@ static _Noreturn void AppTasks_FailCurrentThread(void)
   taskENTER_CRITICAL();
   runtime_snapshot.motion_inhibited = true;
   runtime_snapshot.fault_latched = true;
+  (void)AppMotionGate_Update(&runtime_snapshot.motion_gate, false);
   taskEXIT_CRITICAL();
   (void)AppControlTimebase_Stop();
   BspMotor_EmergencyCoastAll();
@@ -184,6 +190,31 @@ static uint32_t AppTasks_SumUartTxFaults(const BspUartStats *stats)
   return total;
 }
 
+static bool AppTasks_RefreshMotionGate(
+  uint32_t now_ms,
+  bool *motion_available)
+{
+  if (motion_available == NULL) {
+    return false;
+  }
+
+  /*
+   * 调用者必须已经挂起调度器，使快照条件、许可下降沿和代际更新对控制、安全、通信和
+   * IMU 四个任务形成同一全序。实时年龄直接使用 now_ms，不能只信任快照中的旧 age。
+   */
+  const bool imu_motion_usable =
+    AppImu_IsMotionUsable(&runtime_snapshot.imu, now_ms);
+  const bool available = AppMotionGate_ComputeAvailable(
+    runtime_snapshot.runtime_ready,
+    runtime_snapshot.motion_inhibited,
+    runtime_snapshot.fault_latched,
+    imu_motion_usable);
+  const bool updated = AppMotionGate_Update(
+    &runtime_snapshot.motion_gate, available);
+  *motion_available = runtime_snapshot.motion_gate.available;
+  return updated;
+}
+
 static void AppTasks_LatchCommEstop(void)
 {
   /*
@@ -193,6 +224,7 @@ static void AppTasks_LatchCommEstop(void)
   vTaskSuspendAll();
   runtime_snapshot.motion_inhibited = true;
   runtime_snapshot.fault_latched = true;
+  (void)AppMotionGate_Update(&runtime_snapshot.motion_gate, false);
   BspMotor_EmergencyCoastAll();
   (void)xTaskResumeAll();
 }
@@ -206,40 +238,48 @@ static bool AppTasks_QueueMotorCommand(
     return false;
   }
 
-  AppMotorRequestType type;
-  switch (command->type) {
-    case APP_COMM_COMMAND_ARM:
-      type = APP_MOTOR_REQUEST_ARM;
-      break;
-    case APP_COMM_COMMAND_PWM:
-      type = APP_MOTOR_REQUEST_SET_PWM;
-      break;
-    case APP_COMM_COMMAND_STOP:
-      type = APP_MOTOR_REQUEST_STOP;
-      break;
-    case APP_COMM_COMMAND_NONE:
-    case APP_COMM_COMMAND_ESTOP:
-    case APP_COMM_COMMAND_STATUS:
-    default:
-      return false;
-  }
+  AppMotionGatedRequest request;
+  bool motion_available = false;
+  bool gate_updated;
+  bool sequence_committed = false;
+  osStatus_t queue_status = osError;
+  AppMotionPrepareResult prepare_result;
 
-  const AppMotorOpenLoopRequest request = {
-    .type = type,
-    .sequence = command->sequence,
-    .pwm = command->pwm,
-  };
-  if (osMessageQueuePut(motor_command_queue, &request, 0U, 0U) != osOK) {
+  /*
+   * 普通命令的实时许可检查、带代际请求入队和协议序号提交在同一调度器挂起区完成。
+   * 零等待队列操作不会阻塞；TIM7 ISR 仍可到达，但其他任务不能在检查与提交之间改变
+   * motion gate。STATUS/ESTOP 在调用本函数前已经分流。
+   */
+  vTaskSuspendAll();
+  gate_updated = AppTasks_RefreshMotionGate(HAL_GetTick(), &motion_available);
+  prepare_result = gate_updated
+                     ? AppMotionGate_PrepareCommand(
+                         &runtime_snapshot.motion_gate, command, &request)
+                     : APP_MOTION_PREPARE_INVALID;
+  if (prepare_result == APP_MOTION_PREPARE_READY) {
+    queue_status = osMessageQueuePut(
+      motor_command_queue, &request, 0U, 0U);
+    if (queue_status == osOK) {
+      sequence_committed = AppCommProtocol_CommitSequence(
+        protocol, command);
+    }
+  }
+  (void)xTaskResumeAll();
+
+  if (!gate_updated || prepare_result == APP_MOTION_PREPARE_INVALID ||
+      prepare_result == APP_MOTION_PREPARE_NOT_MOTION_COMMAND ||
+      (queue_status == osOK && !sequence_committed)) {
+    AppTasks_FailCurrentThread();
+  }
+  if (prepare_result == APP_MOTION_PREPARE_GATE_REJECTED) {
+    communication->motion_gate_reject_count = AppTasks_AddSaturated(
+      communication->motion_gate_reject_count, 1U);
+    return false;
+  }
+  if (queue_status != osOK) {
     communication->command_queue_drop_count = AppTasks_AddSaturated(
       communication->command_queue_drop_count, 1U);
     return false;
-  }
-  /*
-   * 两阶段提交把“命令副本进入队列”和“序号成为防重放基线”组成事务。若 Commit 在入队
-   * 成功后仍失败，说明通信解析与队列状态发生内部不一致，必须按系统故障处理而非丢命令。
-   */
-  if (!AppCommProtocol_CommitSequence(protocol, command)) {
-    AppTasks_FailCurrentThread();
   }
   return true;
 }
@@ -273,8 +313,13 @@ static void AppTasks_FillTelemetryInput(
     &snapshot->communication.protocol);
   input->command_queue_drop_count =
     snapshot->communication.command_queue_drop_count;
+  input->motion_gate_reject_count =
+    snapshot->communication.motion_gate_reject_count;
+  input->invalidated_motor_command_count =
+    snapshot->invalidated_motor_command_count;
   input->adc_error_count = snapshot->communication.adc_error_count;
   input->critical_tasks_alive = snapshot->critical_tasks_alive;
+  input->runtime_ready = snapshot->runtime_ready;
   input->motion_inhibited = snapshot->motion_inhibited;
   input->fault_latched = snapshot->fault_latched;
 }
@@ -282,12 +327,14 @@ static void AppTasks_FillTelemetryInput(
 static BspStatus AppTasks_CommitControlMotorOutput(
   AppMotorOpenLoop *controller,
   uint32_t now_ms,
-  const AppMotorOpenLoopRequest *request)
+  const AppMotionGatedRequest *request,
+  bool has_queued_request)
 {
   if (controller == NULL || request == NULL) {
     return BSP_INVALID_ARG;
   }
 
+  AppMotorOpenLoopRequest effective_request = request->request;
   AppMotorOpenLoopOutput output;
   AppMotorOpenLoopSnapshot snapshot;
   BspStatus status = BSP_OK;
@@ -298,18 +345,35 @@ static BspStatus AppTasks_CommitControlMotorOutput(
    * 读取旧的 motion_inhibited 后、真正写 PWM 前插入。区域内不得加入阻塞调用或格式化。
    */
   vTaskSuspendAll();
-  const bool motion_inhibited = runtime_snapshot.motion_inhibited;
+  bool motion_available = false;
+  const bool gate_updated = AppTasks_RefreshMotionGate(
+    now_ms, &motion_available);
   const bool fault_latched = runtime_snapshot.fault_latched;
-  if (!AppMotorOpenLoop_Step(
-        controller,
-        now_ms,
-        motion_inhibited,
-        fault_latched,
-        request,
-        &output) ||
-      !AppMotorOpenLoop_GetSnapshot(controller, &snapshot)) {
+  if (!gate_updated) {
     status = BSP_ERROR;
   } else {
+    if (has_queued_request &&
+        !AppMotionGate_IsRequestCurrent(
+          &runtime_snapshot.motion_gate, request)) {
+      effective_request.type = APP_MOTOR_REQUEST_NONE;
+      effective_request.sequence = 0U;
+      effective_request.pwm = 0;
+      runtime_snapshot.invalidated_motor_command_count =
+        AppTasks_AddSaturated(
+          runtime_snapshot.invalidated_motor_command_count, 1U);
+    }
+  }
+  if (status == BSP_OK &&
+      (!AppMotorOpenLoop_Step(
+        controller,
+        now_ms,
+        !motion_available,
+        fault_latched,
+        &effective_request,
+        &output) ||
+       !AppMotorOpenLoop_GetSnapshot(controller, &snapshot))) {
+    status = BSP_ERROR;
+  } else if (status == BSP_OK) {
     status = AppTasks_ApplyMotorOutput(&output);
     if (status == BSP_OK) {
       runtime_snapshot.motor_open_loop = snapshot;
@@ -367,6 +431,7 @@ BspStatus AppTasks_Create(void)
   memset(task_handles, 0, sizeof(task_handles));
   memset(&runtime_snapshot, 0, sizeof(runtime_snapshot));
   runtime_snapshot.motion_inhibited = true;
+  AppMotionGate_Init(&runtime_snapshot.motion_gate);
 
   runtime_events = osEventFlagsNew(NULL);
   if (runtime_events == NULL) {
@@ -375,7 +440,7 @@ BspStatus AppTasks_Create(void)
 
   motor_command_queue = osMessageQueueNew(
     ROBOT_CONFIG_MOTOR_COMMAND_QUEUE_DEPTH,
-    sizeof(AppMotorOpenLoopRequest),
+    sizeof(AppMotionGatedRequest),
     NULL);
   if (motor_command_queue == NULL) {
     AppTasks_StopCreatedThreads();
@@ -410,6 +475,41 @@ BspStatus AppTasks_GetSnapshot(AppRuntimeSnapshot *snapshot)
   return BSP_OK;
 }
 
+BspStatus AppTasks_TrySetRuntimeReady(void)
+{
+  if (runtime_events == NULL) {
+    return BSP_ERROR;
+  }
+
+  BspStatus status = BSP_BUSY;
+  bool motion_available = false;
+  vTaskSuspendAll();
+  const uint32_t now_ms = HAL_GetTick();
+  if (runtime_snapshot.fault_latched) {
+    status = BSP_ERROR;
+  } else if (runtime_snapshot.runtime_ready) {
+    status = BSP_OK;
+  } else if (runtime_snapshot.critical_tasks_alive &&
+             AppImu_IsMotionUsable(
+               &runtime_snapshot.imu, now_ms)) {
+    /*
+     * runtime_ready 是本次上电单向锁，只证明启动门曾完整通过；动态 IMU 或心跳故障仍由
+     * motion_inhibited 和 motion gate 在后续每个任务周期持续禁止运动。
+     */
+    runtime_snapshot.runtime_ready = true;
+    status = BSP_OK;
+  }
+
+  if (!AppTasks_RefreshMotionGate(now_ms, &motion_available)) {
+    runtime_snapshot.motion_inhibited = true;
+    runtime_snapshot.fault_latched = true;
+    (void)AppMotionGate_Update(&runtime_snapshot.motion_gate, false);
+    status = BSP_ERROR;
+  }
+  (void)xTaskResumeAll();
+  return status;
+}
+
 static void AppTasks_Control(void *argument)
 {
   (void)argument;
@@ -424,13 +524,19 @@ static void AppTasks_Control(void *argument)
    */
   AppMotorOpenLoop motor_open_loop;
   AppMotorOpenLoop_Init(&motor_open_loop, motor_started_at_ms);
-  const AppMotorOpenLoopRequest no_motor_request = {
-    .type = APP_MOTOR_REQUEST_NONE,
-    .sequence = 0U,
-    .pwm = 0,
+  const AppMotionGatedRequest no_motor_request = {
+    .request = {
+      .type = APP_MOTOR_REQUEST_NONE,
+      .sequence = 0U,
+      .pwm = 0,
+    },
+    .gate_generation = 0U,
   };
   if (AppTasks_CommitControlMotorOutput(
-        &motor_open_loop, motor_started_at_ms, &no_motor_request) != BSP_OK) {
+        &motor_open_loop,
+        motor_started_at_ms,
+        &no_motor_request,
+        false) != BSP_OK) {
     AppTasks_FailCurrentThread();
   }
 
@@ -498,14 +604,17 @@ static void AppTasks_Control(void *argument)
      * 消息队列只做一次零等待 Get，保证每个确定性节拍最多推进一条命令。发送端洪泛只会
      * 填满有限队列并留下 drop 计数，不会把控制周期变成无界 while 循环。
      */
-    AppMotorOpenLoopRequest motor_request = no_motor_request;
+    AppMotionGatedRequest motor_request = no_motor_request;
     const osStatus_t command_status = osMessageQueueGet(
       motor_command_queue, &motor_request, NULL, 0U);
     if (command_status != osOK && command_status != osErrorResource) {
       AppTasks_FailCurrentThread();
     }
     if (AppTasks_CommitControlMotorOutput(
-          &motor_open_loop, HAL_GetTick(), &motor_request) != BSP_OK) {
+          &motor_open_loop,
+          HAL_GetTick(),
+          &motor_request,
+          command_status == osOK) != BSP_OK) {
       AppTasks_FailCurrentThread();
     }
 
@@ -544,20 +653,20 @@ static void AppTasks_Safety(void *argument)
 
     AppSafetyPolicyOutput safety_output;
     bool policy_updated;
+    bool gate_updated = false;
     vTaskSuspendAll();
     /*
      * 在同一调度仲裁区读取 IMU/外部锁存、更新策略、发布安全状态并执行空转。控制任务无法
      * 在状态发布和硬件覆盖之间插入，但中断仍保持运行，时基可记录安全处理带来的任务延迟。
      */
-    const bool imu_healthy = runtime_snapshot.imu.health == APP_IMU_HEALTH_HEALTHY;
-    /*
-     * 当前策略只按 health 判定，尚未同时检查 DATA_VALID/DATA_STALE/sample_age；持续无新
-     * 样本但无总线错误时可能仍保持 HEALTHY，此处需要后续安全修复，不能视为完整数据门。
-     */
+    const uint32_t now_ms = HAL_GetTick();
+    const bool imu_motion_usable =
+      AppImu_IsMotionUsable(&runtime_snapshot.imu, now_ms);
     policy_updated = AppSafetyPolicy_Update(
       &safety_policy,
+      runtime_snapshot.runtime_ready,
       tasks_healthy,
-      imu_healthy,
+      imu_motion_usable,
       runtime_snapshot.fault_latched,
       ROBOT_CONFIG_HEALTH_MISS_LIMIT,
       &safety_output);
@@ -566,15 +675,20 @@ static void AppTasks_Safety(void *argument)
       runtime_snapshot.health_miss_count = safety_policy.critical_heartbeat_miss_count;
       runtime_snapshot.motion_inhibited = safety_policy.motion_inhibited;
       runtime_snapshot.fault_latched = safety_policy.fault_latched;
+      bool motion_available = false;
+      gate_updated = AppTasks_RefreshMotionGate(
+        now_ms, &motion_available);
 
-      if (safety_output.emergency_coast_request) {
+      if (gate_updated &&
+          safety_output.emergency_coast_request) {
         BspMotor_EmergencyCoastAll();
-      } else if (safety_output.normal_coast_request) {
+      } else if (gate_updated &&
+                 safety_output.normal_coast_request) {
         BspMotor_CoastAll();
       }
     }
     (void)xTaskResumeAll();
-    if (!policy_updated) {
+    if (!policy_updated || !gate_updated) {
       AppTasks_FailCurrentThread();
     }
 
@@ -711,11 +825,18 @@ static void AppTasks_Imu(void *argument)
     (void)osThreadFlagsWait(
       APP_IMU_THREAD_FLAG_DATA_READY, osFlagsWaitAny, pdMS_TO_TICKS(ROBOT_CONFIG_IMU_PERIOD_MS * 2U));
     AppImuOutput output;
-    const BspStatus status = AppImu_Process(HAL_GetTick(), &output);
+    const uint32_t now_ms = HAL_GetTick();
+    const BspStatus status = AppImu_Process(now_ms, &output);
 
-    taskENTER_CRITICAL();
+    bool motion_available = false;
+    vTaskSuspendAll();
     runtime_snapshot.imu = output;
-    taskEXIT_CRITICAL();
+    const bool gate_updated = AppTasks_RefreshMotionGate(
+      now_ms, &motion_available);
+    (void)xTaskResumeAll();
+    if (!gate_updated) {
+      AppTasks_FailCurrentThread();
+    }
 
     /*
      * Process 返回值描述本次数据机会，不能代表任务存活。无论 BUSY、退避还是数据故障，

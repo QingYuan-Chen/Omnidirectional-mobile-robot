@@ -4,6 +4,7 @@
 #include "app_comm_protocol.h"
 #include "app_control_timing.h"
 #include "app_imu.h"
+#include "app_motion_gate.h"
 #include "app_motor_open_loop.h"
 #include "bsp_types.h"
 #include "bsp_uart.h"
@@ -36,7 +37,8 @@ typedef enum {
  * 通信任务拥有的累计诊断快照。
  * protocol 和 uart_ttl 分别来自解析器与 UART BSP；queue_drop 表示运动命令未进入控制
  * 队列；telemetry_enqueue_drop 表示完整遥测帧未进入发送队列；format_error 表示本地
- * 缓冲容量不足或参数异常；estop_command_count 记录绕过普通队列的急停命令。
+ * 缓冲容量不足或参数异常；motion_gate_reject 表示普通命令在运行许可关闭时被前置拒绝，
+ * estop_command_count 记录绕过普通队列的急停命令。
  */
 typedef struct {
   AppCommProtocolStats protocol;
@@ -46,16 +48,17 @@ typedef struct {
   uint32_t telemetry_enqueue_drop_count;
   uint32_t telemetry_format_error_count;
   uint32_t adc_error_count;
+  uint32_t motion_gate_reject_count;
   uint32_t estop_command_count;
 } AppCommRuntimeSnapshot;
 
 /*
  * 整机运行快照，是应用层向启动检查、遥测和诊断提供的唯一聚合视图。
  *
- * 每个数据字段组只有一个主要写入者：控制任务写编码器、时序和电机状态；通信任务写
- * 通信与电池；IMU 任务写 imu；监控任务写栈余量。安全任务常规更新心跳与安全状态，
- * 通信 ESTOP 使用调度器挂起区紧急锁存，任一任务失败则在临界区进入统一锁存路径。
- * 读取者通过 AppTasks_GetSnapshot 获得独立副本，禁止外部模块直接持有内部地址。
+ * 常规数据字段组只有一个主要写入者：控制任务写编码器、时序和电机状态；通信任务写
+ * 通信与电池；IMU 任务写 imu；监控任务写栈余量。安全状态允许通信 ESTOP 和统一失败
+ * 路径紧急置位；motion_gate 是明确的多写入者仲裁字段，只能在调度器挂起或最终失败
+ * 临界区内更新。读取者通过 AppTasks_GetSnapshot 获得独立副本，禁止持有内部地址。
  */
 typedef struct {
   uint16_t encoder_raw[BSP_MOTOR_COUNT];
@@ -67,8 +70,11 @@ typedef struct {
   AppImuOutput imu;
   uint16_t battery_millivolts;
   uint32_t health_miss_count;
+  uint32_t invalidated_motor_command_count;
   uint32_t stack_free_bytes[APP_TASK_COUNT];
+  AppMotionGate motion_gate;
   bool critical_tasks_alive;
+  bool runtime_ready;
   bool motion_inhibited;
   bool fault_latched;
 } AppRuntimeSnapshot;
@@ -85,6 +91,13 @@ BspStatus AppTasks_Create(void);
  * 外格式化或分析，不得把其中状态反向写回作为控制输入。
  */
 BspStatus AppTasks_GetSnapshot(AppRuntimeSnapshot *snapshot);
+/*
+ * 尝试锁存本次上电的运行就绪状态。
+ * 只有最近安全检查窗确认关键任务心跳完整、实时 IMU 运动判据通过且没有硬故障时返回
+ * BSP_OK；条件尚未满足返回 BSP_BUSY，已锁存故障或内部许可代际异常返回 BSP_ERROR。
+ * runtime_ready 一旦成功置位，本次上电不再清零；动态运动许可仍由安全与 IMU 门持续控制。
+ */
+BspStatus AppTasks_TrySetRuntimeReady(void);
 
 #ifdef __cplusplus
 }

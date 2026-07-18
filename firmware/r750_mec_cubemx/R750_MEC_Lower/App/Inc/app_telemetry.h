@@ -43,8 +43,11 @@ typedef struct {
   uint32_t uart_tx_fault_count;
   uint32_t command_reject_count;
   uint32_t command_queue_drop_count;
+  uint32_t motion_gate_reject_count;
+  uint32_t invalidated_motor_command_count;
   uint32_t adc_error_count;
   bool critical_tasks_alive;
+  bool runtime_ready;
   bool motion_inhibited;
   bool fault_latched;
 } AppTelemetryInput;

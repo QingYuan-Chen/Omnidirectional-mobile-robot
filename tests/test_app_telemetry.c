@@ -53,8 +53,11 @@ static void FillWorstCase(AppTelemetryInput *input)
   input->uart_tx_fault_count = UINT32_MAX;
   input->command_reject_count = UINT32_MAX;
   input->command_queue_drop_count = UINT32_MAX;
+  input->motion_gate_reject_count = UINT32_MAX;
+  input->invalidated_motor_command_count = UINT32_MAX;
   input->adc_error_count = UINT32_MAX;
   input->critical_tasks_alive = true;
+  input->runtime_ready = true;
   input->motion_inhibited = true;
   input->fault_latched = true;
 }
@@ -100,10 +103,10 @@ static void TestNormalFrame(void)
   assert(strstr((const char *)frame, ",D,-2") != NULL);
   assert(strstr((const char *)frame, ",E,-20") != NULL);
   assert(strstr((const char *)frame, ",P,100,50,B,12000") != NULL);
-  assert(strstr((const char *)frame, ",S,0,0,0,0,0,I,") != NULL);
+  assert(strstr((const char *)frame, ",S,0,0,0,0,0,0,I,") != NULL);
   assert(strstr((const char *)frame, ",I,11,4,J,1,9,L,20,50") != NULL);
   assert(strstr((const char *)frame, ",M,6,7,C,") != NULL);
-  assert(strstr((const char *)frame, ",C,0,0,0,0,0,0\n") != NULL);
+  assert(strstr((const char *)frame, ",C,0,0,0,0,0,0,0,0\n") != NULL);
 }
 
 static void TestWorstCaseBudgetAndBoundary(void)
@@ -118,7 +121,7 @@ static void TestWorstCaseBudgetAndBoundary(void)
   assert(length <= UART_BYTES_PER_TELEMETRY_PERIOD);
   assert(length > 1U);
   assert(frame[length - 1U] == (uint8_t)'\n');
-  assert(strstr((const char *)frame, ",S,1,1,1,6,1,I,") != NULL);
+  assert(strstr((const char *)frame, ",S,1,1,1,1,6,1,I,") != NULL);
   assert(strstr((const char *)frame, ",I,4294967295,5,J,") != NULL);
 
   uint8_t exact[ROBOT_CONFIG_UART_TX_FRAME_MAX_LENGTH];

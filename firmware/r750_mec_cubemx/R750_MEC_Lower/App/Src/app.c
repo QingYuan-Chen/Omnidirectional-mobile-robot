@@ -33,25 +33,25 @@ static void App_FatalLoop(void)
 static bool App_WaitForRuntimeReady(void)
 {
   /*
-   * 就绪门不是简单等待任务创建完成：标定、有效新数据、ESKF 初始化与收敛、时间戳连续
-   * 和倾角有效必须同时成立。六轴 IMU 的绝对航向本来不可观，因此不把
-   * ABSOLUTE_YAW_VALID 纳入启动条件。
+   * 默认任务不复制 IMU 标志组合，而是要求任务层用统一实时判据原子锁存 runtime_ready，
+   * 再等待安全任务解除动态 motion_inhibited。这样启动检查、通信准入、控制最终门和
+   * 安全策略共享同一真源；六轴 IMU 的绝对航向不可观仍由统一判据内部处理。
    */
-  const uint32_t required_imu_flags =
-    (uint32_t)APP_IMU_FLAG_CALIBRATED | (uint32_t)APP_IMU_FLAG_DATA_VALID |
-    (uint32_t)APP_IMU_FLAG_FILTER_INITIALIZED | (uint32_t)APP_IMU_FLAG_FILTER_CONVERGED |
-    (uint32_t)APP_IMU_FLAG_TIMESTAMP_VALID | (uint32_t)APP_IMU_FLAG_TILT_VALID;
-  const uint32_t rejected_imu_flags = (uint32_t)APP_IMU_FLAG_SENSOR_FAULT | (uint32_t)APP_IMU_FLAG_DATA_STALE;
   const uint32_t started_at = HAL_GetTick();
 
   do {
+    const BspStatus ready_status =
+      AppTasks_TrySetRuntimeReady();
     AppRuntimeSnapshot snapshot;
     if (AppTasks_GetSnapshot(&snapshot) == BSP_OK) {
-      if (snapshot.fault_latched) {
+      const uint32_t now_ms = HAL_GetTick();
+      if (ready_status == BSP_ERROR ||
+          snapshot.fault_latched) {
         return false;
       }
-      if ((snapshot.imu.flags & required_imu_flags) == required_imu_flags &&
-          (snapshot.imu.flags & rejected_imu_flags) == 0U) {
+      if (ready_status == BSP_OK && snapshot.runtime_ready &&
+          !snapshot.motion_inhibited &&
+          AppImu_IsMotionUsable(&snapshot.imu, now_ms)) {
         return true;
       }
     }

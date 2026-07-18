@@ -42,6 +42,15 @@ target_include_directories(test_app_motor_open_loop PRIVATE "${APP_DIR}/Inc")
 target_compile_options(test_app_motor_open_loop PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
 add_test(NAME app_motor_open_loop COMMAND test_app_motor_open_loop)
 
+add_executable(test_app_motion_gate
+  test_app_motion_gate.c
+  "${APP_DIR}/Src/app_comm_protocol.c"
+  "${APP_DIR}/Src/app_motion_gate.c"
+)
+target_include_directories(test_app_motion_gate PRIVATE "${APP_DIR}/Inc")
+target_compile_options(test_app_motion_gate PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME app_motion_gate COMMAND test_app_motion_gate)
+
 add_executable(test_app_safety_policy
   test_app_safety_policy.c
   "${APP_DIR}/Src/app_safety_policy.c"

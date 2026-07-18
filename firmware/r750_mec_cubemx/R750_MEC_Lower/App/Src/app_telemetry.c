@@ -166,6 +166,8 @@ bool AppTelemetry_Format(
   AppTelemetry_AppendLiteral(&writer, ",S,");
   AppTelemetry_AppendU32(&writer, input->critical_tasks_alive ? 1U : 0U);
   AppTelemetry_AppendByte(&writer, (uint8_t)',');
+  AppTelemetry_AppendU32(&writer, input->runtime_ready ? 1U : 0U);
+  AppTelemetry_AppendByte(&writer, (uint8_t)',');
   AppTelemetry_AppendU32(&writer, input->motion_inhibited ? 1U : 0U);
   AppTelemetry_AppendByte(&writer, (uint8_t)',');
   AppTelemetry_AppendU32(&writer, input->fault_latched ? 1U : 0U);
@@ -204,6 +206,10 @@ bool AppTelemetry_Format(
   AppTelemetry_AppendU32(&writer, input->command_reject_count);
   AppTelemetry_AppendByte(&writer, (uint8_t)',');
   AppTelemetry_AppendU32(&writer, input->command_queue_drop_count);
+  AppTelemetry_AppendByte(&writer, (uint8_t)',');
+  AppTelemetry_AppendU32(&writer, input->motion_gate_reject_count);
+  AppTelemetry_AppendByte(&writer, (uint8_t)',');
+  AppTelemetry_AppendU32(&writer, input->invalidated_motor_command_count);
   AppTelemetry_AppendByte(&writer, (uint8_t)',');
   AppTelemetry_AppendU32(&writer, input->adc_error_count);
   AppTelemetry_AppendByte(&writer, (uint8_t)'\n');

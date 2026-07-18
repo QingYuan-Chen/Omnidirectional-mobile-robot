@@ -16,7 +16,7 @@
 #define ROBOT_CONFIG_UART_BAUDRATE                 (230400U)
 #define ROBOT_CONFIG_UART_LINE_BUFFER_SIZE         (64U)
 #define ROBOT_CONFIG_UART_TX_QUEUE_DEPTH           (4U)
-#define ROBOT_CONFIG_UART_TX_FRAME_MAX_LENGTH      (384U)
+#define ROBOT_CONFIG_UART_TX_FRAME_MAX_LENGTH      (416U)
 #define ROBOT_CONFIG_MOTOR_COMMAND_QUEUE_DEPTH     (8U)
 #define ROBOT_CONFIG_CPU_CLOCK_HZ                  (168000000U)
 
@@ -77,8 +77,8 @@
 /*
  * 非控制任务周期与系统健康门槛。
  * 通信服务和遥测使用毫秒任务周期；安全任务按检查窗收集关键心跳，连续缺失达到
- * HEALTH_MISS_LIMIT 才升级硬故障。默认任务只在 RUNTIME_READY_TIMEOUT 内等待 IMU 完成
- * 有效数据、时间戳、倾角和收敛门槛。
+ * HEALTH_MISS_LIMIT 才升级硬故障。默认任务只在 RUNTIME_READY_TIMEOUT 内等待关键任务
+ * 心跳完整，并等待 IMU 完成有效数据、时间戳、倾角和 ESKF 收敛门槛。
  */
 #define ROBOT_CONFIG_RUNTIME_READY_TIMEOUT_MS      (3000U)
 #define ROBOT_CONFIG_COMM_SERVICE_PERIOD_MS       (2U)
