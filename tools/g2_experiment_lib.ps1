@@ -298,6 +298,195 @@ function Measure-G2DeadzoneMotion {
     }
 }
 
+function Measure-G2OperatingPoint {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Rows,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Positive', 'Negative')]
+        [string]$Direction,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, 840)]
+        [int]$PeakPwm,
+
+        [ValidateRange(1, 10000000)]
+        [int64]$CountsPerWheelRevolution = 122880,
+
+        [ValidateRange(0, 5000)]
+        [int]$SteadySettleMilliseconds = 500,
+
+        [ValidateRange(1, 1000000)]
+        [int64]$MotionThresholdCounts = 1000,
+
+        [ValidateRange(1, 1000000)]
+        [int64]$OtherChannelLimitCounts = 1000
+    )
+
+    if ($Rows.Count -lt 3) {
+        throw '工作点分析至少需要三行遥测'
+    }
+    $requiredColumns = @(
+        'board_now_ms',
+        'target_pwm',
+        'applied_pwm',
+        'battery_mv',
+        'encoder_total_1',
+        'encoder_total_2',
+        'encoder_total_3',
+        'encoder_total_4'
+    )
+    foreach ($column in $requiredColumns) {
+        if ($null -eq $Rows[0].PSObject.Properties[$column]) {
+            throw "遥测缺少字段：$column"
+        }
+    }
+
+    $directionSign = if ($Direction -ceq 'Positive') { [int64]1 } else { [int64]-1 }
+    $expectedPwm = [int32]($directionSign * $PeakPwm)
+    $targetStartIndex = -1
+    $steadyIndices = [Collections.Generic.List[int]]::new()
+    for ($index = 0; $index -lt $Rows.Count; $index++) {
+        if ($targetStartIndex -lt 0 -and [int32]$Rows[$index].target_pwm -eq $expectedPwm) {
+            $targetStartIndex = $index
+        }
+        if ([int32]$Rows[$index].target_pwm -eq $expectedPwm -and
+            [int32]$Rows[$index].applied_pwm -eq $expectedPwm) {
+            $steadyIndices.Add($index)
+        }
+    }
+    if ($targetStartIndex -lt 0) {
+        throw "遥测中没有找到目标 PWM $expectedPwm"
+    }
+    if ($steadyIndices.Count -lt 2) {
+        throw "PWM $expectedPwm 的稳态窗口不足两行"
+    }
+
+    $appliedPeakStartIndex = $steadyIndices[0]
+    $appliedPeakStart = $Rows[$appliedPeakStartIndex]
+    $steadyStartIndex = -1
+    foreach ($index in $steadyIndices) {
+        $elapsedAtPeak = Get-G2UInt32Delta `
+            -Previous ([uint32]$appliedPeakStart.board_now_ms) `
+            -Current ([uint32]$Rows[$index].board_now_ms)
+        if ($elapsedAtPeak -ge [uint64]$SteadySettleMilliseconds) {
+            $steadyStartIndex = $index
+            break
+        }
+    }
+    if ($steadyStartIndex -lt 0) {
+        throw "PWM $expectedPwm 达到目标后没有足够的稳态等待窗口"
+    }
+    $steadyEndIndex = $steadyIndices[$steadyIndices.Count - 1]
+    if ($steadyEndIndex -le $steadyStartIndex) {
+        throw "PWM $expectedPwm 排除稳态等待时间后不足两行"
+    }
+    $steadyStart = $Rows[$steadyStartIndex]
+    $steadyEnd = $Rows[$steadyEndIndex]
+    $steadyDuration = Get-G2UInt32Delta `
+        -Previous ([uint32]$steadyStart.board_now_ms) `
+        -Current ([uint32]$steadyEnd.board_now_ms)
+    if ($steadyDuration -eq 0) {
+        throw '稳态窗口板端时长为零'
+    }
+
+    $steadySignedCountChange = $directionSign * (
+        [int64]$steadyEnd.encoder_total_1 - [int64]$steadyStart.encoder_total_1)
+    $steadySignedRate = ([double]$steadySignedCountChange * 1000.0) /
+        [double]$steadyDuration
+    $steadyRpm = ($steadySignedRate * 60.0) / [double]$CountsPerWheelRevolution
+    $intervalRates = [Collections.Generic.List[double]]::new()
+    for ($index = $steadyStartIndex + 1; $index -le $steadyEndIndex; $index++) {
+        $previous = $Rows[$index - 1]
+        $current = $Rows[$index]
+        if ([int32]$previous.target_pwm -ne $expectedPwm -or
+            [int32]$previous.applied_pwm -ne $expectedPwm -or
+            [int32]$current.target_pwm -ne $expectedPwm -or
+            [int32]$current.applied_pwm -ne $expectedPwm) {
+            continue
+        }
+        $deltaMs = Get-G2UInt32Delta `
+            -Previous ([uint32]$previous.board_now_ms) `
+            -Current ([uint32]$current.board_now_ms)
+        if ($deltaMs -eq 0) {
+            continue
+        }
+        $signedDelta = $directionSign * (
+            [int64]$current.encoder_total_1 - [int64]$previous.encoder_total_1)
+        $intervalRates.Add(([double]$signedDelta * 1000.0) / [double]$deltaMs)
+    }
+    if ($intervalRates.Count -eq 0) {
+        throw '稳态窗口没有可用的相邻采样计数率'
+    }
+
+    $targetStart = $Rows[$targetStartIndex]
+    $timeToAppliedPeak = Get-G2UInt32Delta `
+        -Previous ([uint32]$targetStart.board_now_ms) `
+        -Current ([uint32]$appliedPeakStart.board_now_ms)
+    $baselineIndex = [Math]::Max(0, $targetStartIndex - 1)
+    $baselineCount = [int64]$Rows[$baselineIndex].encoder_total_1
+    $motionStartDelay = $null
+    for ($index = $targetStartIndex; $index -lt $Rows.Count; $index++) {
+        $signedDisplacement = $directionSign * (
+            [int64]$Rows[$index].encoder_total_1 - $baselineCount)
+        if ($signedDisplacement -ge $MotionThresholdCounts) {
+            $motionStartDelay = Get-G2UInt32Delta `
+                -Previous ([uint32]$targetStart.board_now_ms) `
+                -Current ([uint32]$Rows[$index].board_now_ms)
+            break
+        }
+    }
+
+    $baselineRows = @($Rows[0..$baselineIndex])
+    $activeRows = @($Rows | Where-Object {
+        [int32]$_.target_pwm -ne 0 -or [int32]$_.applied_pwm -ne 0
+    })
+    $baselineBatteryAverage = [double]((
+        $baselineRows | Measure-Object -Property battery_mv -Average).Average)
+    $activeBatteryMinimum = [uint32]((
+        $activeRows | Measure-Object -Property battery_mv -Minimum).Minimum)
+    $activeBatteryAverage = [double]((
+        $activeRows | Measure-Object -Property battery_mv -Average).Average)
+    $motion = Measure-G2DeadzoneMotion `
+        -Rows $Rows `
+        -Direction $Direction `
+        -MotionThresholdCounts $MotionThresholdCounts `
+        -OtherChannelLimitCounts $OtherChannelLimitCounts
+
+    return [pscustomobject][ordered]@{
+        direction = $Direction
+        peak_pwm = $PeakPwm
+        signed_peak_pwm = $expectedPwm
+        counts_per_wheel_revolution = $CountsPerWheelRevolution
+        steady_window = [pscustomobject][ordered]@{
+            settling_excluded_ms = $SteadySettleMilliseconds
+            row_count = $steadyEndIndex - $steadyStartIndex + 1
+            duration_ms = $steadyDuration
+            signed_count_change = $steadySignedCountChange
+            signed_count_rate_cps = $steadySignedRate
+            wheel_rpm = $steadyRpm
+            interval_count_rate_cps = [pscustomobject][ordered]@{
+                minimum = [double](($intervalRates | Measure-Object -Minimum).Minimum)
+                median = Get-G2Percentile -Values $intervalRates.ToArray() -Probability 0.5
+                maximum = [double](($intervalRates | Measure-Object -Maximum).Maximum)
+            }
+        }
+        response = [pscustomobject][ordered]@{
+            time_to_applied_peak_ms = $timeToAppliedPeak
+            motion_threshold_counts = $MotionThresholdCounts
+            motion_start_delay_ms = $motionStartDelay
+        }
+        battery_mv = [pscustomobject][ordered]@{
+            baseline_average = $baselineBatteryAverage
+            active_average = $activeBatteryAverage
+            active_minimum = $activeBatteryMinimum
+            baseline_to_active_minimum_drop = $baselineBatteryAverage - $activeBatteryMinimum
+        }
+        motion = $motion
+    }
+}
+
 function Get-G2UInt32Delta {
     param(
         [Parameter(Mandatory = $true)]

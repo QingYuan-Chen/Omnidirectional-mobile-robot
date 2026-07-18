@@ -99,6 +99,48 @@ $wrongDirectionMotion = Measure-G2DeadzoneMotion -Rows $wrongDirectionRows -Dire
 Assert-True (-not $wrongDirectionMotion.moved) '编码器符号错误时不接受起转'
 Assert-True ($wrongDirectionMotion.wrong_direction_detected) '编码器符号错误被显式标记'
 
+function New-OperatingPointTestRow {
+    param(
+        [uint32]$Now,
+        [int32]$Target,
+        [int32]$Applied,
+        [int64]$Encoder1,
+        [uint32]$Battery = 12000
+    )
+    return [pscustomobject]@{
+        board_now_ms = $Now
+        target_pwm = $Target
+        applied_pwm = $Applied
+        battery_mv = $Battery
+        encoder_total_1 = $Encoder1
+        encoder_total_2 = 0
+        encoder_total_3 = 0
+        encoder_total_4 = 0
+    }
+}
+
+$operatingPointRows = @(
+    (New-OperatingPointTestRow 1000 0 0 0),
+    (New-OperatingPointTestRow 1020 240 20 0 11990),
+    (New-OperatingPointTestRow 1040 240 240 100 11980),
+    (New-OperatingPointTestRow 1060 240 240 1100 11970),
+    (New-OperatingPointTestRow 1080 240 240 2100 11960),
+    (New-OperatingPointTestRow 1100 0 200 2200 11970),
+    (New-OperatingPointTestRow 1120 0 0 2200 11980)
+)
+$operatingPoint = Measure-G2OperatingPoint `
+    -Rows $operatingPointRows `
+    -Direction Positive `
+    -PeakPwm 240 `
+    -SteadySettleMilliseconds 0
+Assert-True ($operatingPoint.steady_window.duration_ms -eq 40) '工作点稳态窗口时长'
+Assert-True ($operatingPoint.steady_window.signed_count_rate_cps -eq 50000) '工作点稳态计数率'
+Assert-True ([Math]::Abs($operatingPoint.steady_window.wheel_rpm - 24.4140625) -lt 0.0001) '轮端 RPM 换算'
+Assert-True ($operatingPoint.response.time_to_applied_peak_ms -eq 20) '达到目标 PWM 的爬升时间'
+Assert-True ($operatingPoint.response.motion_start_delay_ms -eq 40) '编码器阈值起转延迟'
+Assert-True ($operatingPoint.motion.moved) '工作点期望方向运动成立'
+Assert-True ($operatingPoint.battery_mv.active_minimum -eq 11960) '工作点带载最低电压'
+
 function New-TestTelemetryRow {
     param(
         [uint32]$Now,
