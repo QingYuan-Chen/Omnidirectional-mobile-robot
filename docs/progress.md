@@ -196,3 +196,11 @@
 - USART2 当前只承载既有大写 ASCII 板测协议，不做 ASCII/X-Protocol 自动探测。M5 启用正式 X-Protocol 前必须先把集中配置迁回 `BSP_UART_TTL/UART4`，最终 STM32—树莓派—电脑层级不变。
 - 新增 `app_debug_uart_config` 主机测试，锁定当前 M2 镜像必须选择 USART2；全量主机测试 13/13 通过。Debug/Release 固件全量构建均为 67/67，RAM 均为 47,088 B，Flash 为 85,372/48,424 B；相对上一提交 RAM 不变，Flash 增加 24/8 B。
 - `app_tasks.c` 使用 ARM GCC 追加 `-Wextra -Wshadow -Wconversion -Werror -fanalyzer` 检查并通过；`git diff --check` 与调试链硬编码扫描作为提交前复核。Type-C/USART2 实机收发仍未执行，下一动作是在电机动力关闭或车轮完全悬空时接收遥测并发送 `STATUS`。
+
+## 2026-07-18：完成 M2 板测提交一的 USART2 通信冒烟验收
+
+- 测试条件为 ST-Link 3.28 V 单独供电、电机无动力、车轮悬空；重新下载并校验提交 `bfb60a7` 的 Debug ELF 成功。全程只执行被动遥测接收和一条 `STATUS`，未发送 `ARM/PWM/STOP/ESTOP`。
+- 原 USB-DEBUG/CH9102 对应的 COM5 无收发；根据 H60 V3.6.0 原理图切换到连接 USART2 PD5/PD6 的 USB-COM 后，Windows 枚举为 COM6。COM6 使用 230400 baud、8N1、无流控，2.2 s 收到 100 条完整 `T,...` 遥测，首尾时间戳单调增长。
+- `STATUS\n` 被协议解析器接受，板端 `accepted_command_count` 从 0 增至 1，并按设计请求同格式状态遥测；语法、数字、范围、旧序号和行溢出计数均为 0。
+- 连续三次关闭并重开 COM6，每次约 0.9 s 分别收到 40、41、41 条遥测，均立即恢复。测试前后 `uwTick` 从 `0x000379A0` 增至 `0x0003CF11`，确认复开过程中未异常复位。
+- 最终板端统计为发送入队 11,269 帧、完成 11,268 帧且 1 帧处于发送队列；UART 奇偶校验、噪声、帧、溢出、接收恢复失败、RX 环形缓冲溢出、TX 队满、TX 启动失败、TX 完成恢复、遥测丢弃和格式化错误均为 0。提交一据此关闭；持续拥塞、错误注入、ADC 标定、电机运动及 M1.3 深度板测仍属于后续提交。
