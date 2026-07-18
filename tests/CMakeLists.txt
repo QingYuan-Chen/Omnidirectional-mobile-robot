@@ -80,6 +80,14 @@ target_include_directories(test_app_imu PRIVATE
 target_compile_options(test_app_imu PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
 add_test(NAME app_imu COMMAND test_app_imu)
 
+add_executable(test_imu_eskf
+  test_imu_eskf.c
+  "${APP_DIR}/Src/imu_eskf.c"
+)
+target_include_directories(test_imu_eskf PRIVATE "${APP_DIR}/Inc")
+target_compile_options(test_imu_eskf PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME imu_eskf COMMAND test_imu_eskf)
+
 add_executable(test_bsp_uart_tx_queue
   test_bsp_uart_tx_queue.c
   "${APP_DIR}/Bsp/Src/bsp_uart_tx_queue.c"

@@ -15,6 +15,8 @@ static uint32_t fake_read_count;
 static BspStatus fake_read_status;
 static bool fake_use_explicit_timestamp;
 static uint32_t fake_explicit_timestamp;
+static int16_t fake_acceleration[3];
+static int16_t fake_angular_rate[3];
 
 static void Test_Fail(const char *expression, int line)
 {
@@ -50,7 +52,8 @@ BspStatus BspImu_ReadSample(BspImuSample *sample)
   }
 
   memset(sample, 0, sizeof(*sample));
-  sample->acceleration[2] = (int16_t)8192;
+  memcpy(sample->acceleration, fake_acceleration, sizeof(fake_acceleration));
+  memcpy(sample->angular_rate, fake_angular_rate, sizeof(fake_angular_rate));
   sample->temperature = (int16_t)(25 * 256);
   if (fake_use_explicit_timestamp) {
     fake_sensor_timestamp = fake_explicit_timestamp & TEST_TIMESTAMP_MASK;
@@ -72,6 +75,9 @@ static void Test_ResetAndCalibrate(uint32_t initial_tick_ms)
   fake_read_status = BSP_OK;
   fake_use_explicit_timestamp = false;
   fake_explicit_timestamp = 0U;
+  memset(fake_acceleration, 0, sizeof(fake_acceleration));
+  memset(fake_angular_rate, 0, sizeof(fake_angular_rate));
+  fake_acceleration[2] = (int16_t)8192;
   TEST_ASSERT(AppImu_Calibrate() == BSP_OK);
 }
 
@@ -258,6 +264,128 @@ static void Test_MotionUsabilityUsesCurrentTime(void)
   TEST_ASSERT(!AppImu_IsMotionUsable(NULL, output.last_good_tick_ms));
 }
 
+static void Test_SpikeUsesLastAcceptedBaselineAndAccumulatedTime(void)
+{
+  Test_ResetAndCalibrate(5000U);
+  AppImuOutput output = Test_AcceptAt(fake_tick_ms);
+  const uint32_t sequence_before_spike = output.sequence;
+  const uint32_t spike_tick_ms = fake_tick_ms + 1U;
+
+  fake_acceleration[0] = (int16_t)16000;
+  fake_tick_ms = spike_tick_ms;
+  TEST_ASSERT(AppImu_Process(fake_tick_ms, &output) == BSP_ERROR);
+  TEST_ASSERT(output.sequence == sequence_before_spike);
+  TEST_ASSERT(output.spike_reject_count == 1U);
+  TEST_ASSERT(output.consecutive_spike_count == 1U);
+  TEST_ASSERT((output.flags & APP_IMU_FLAG_SAMPLE_SPIKE) != 0U);
+
+  fake_acceleration[0] = 0;
+  fake_angular_rate[2] = (int16_t)64;
+  output = Test_AcceptAt(spike_tick_ms + 1U);
+  TEST_ASSERT(output.sequence == sequence_before_spike + 1U);
+  TEST_ASSERT(output.spike_reject_count == 1U);
+  TEST_ASSERT(output.consecutive_spike_count == 0U);
+  TEST_ASSERT((output.flags & APP_IMU_FLAG_SAMPLE_SPIKE) == 0U);
+  TEST_ASSERT(output.euler_rad[2] > 0.00013f);
+  TEST_ASSERT(output.euler_rad[2] < 0.00018f);
+}
+
+static void Test_LongTimestampGapUsesBoundedAccumulatedTime(void)
+{
+  Test_ResetAndCalibrate(5500U);
+  AppImuOutput output = Test_AcceptAt(fake_tick_ms);
+  const uint32_t dropped_before_gap = output.dropped_sample_count;
+
+  fake_use_explicit_timestamp = true;
+  fake_explicit_timestamp = (output.sensor_timestamp + 100U) & TEST_TIMESTAMP_MASK;
+  fake_tick_ms++;
+  TEST_ASSERT(AppImu_Process(fake_tick_ms, &output) == BSP_ERROR);
+  TEST_ASSERT(output.dropped_sample_count == dropped_before_gap + 99U);
+  TEST_ASSERT(output.health == APP_IMU_HEALTH_TRANSIENT_DEGRADED);
+
+  fake_angular_rate[2] = (int16_t)64;
+  output = Test_AcceptAt(fake_tick_ms + 1U);
+  TEST_ASSERT(output.health == APP_IMU_HEALTH_RECOVERING);
+  TEST_ASSERT(output.stable_sample_count == 1U);
+  TEST_ASSERT(output.euler_rad[2] > 0.00080f);
+  TEST_ASSERT(output.euler_rad[2] < 0.00095f);
+}
+
+static void Test_HealthyObservationGatesDoNotDegrade(void)
+{
+  Test_ResetAndCalibrate(6000U);
+  AppImuOutput output = Test_AcceptAt(fake_tick_ms);
+
+  fake_acceleration[0] = (int16_t)5793;
+  fake_acceleration[2] = (int16_t)5793;
+  output = Test_AcceptAt(fake_tick_ms + 1U);
+  TEST_ASSERT(output.health == APP_IMU_HEALTH_HEALTHY);
+  TEST_ASSERT((output.flags & APP_IMU_FLAG_DATA_VALID) != 0U);
+  TEST_ASSERT((output.flags & APP_IMU_FLAG_ACCEL_UPDATE_USED) == 0U);
+  TEST_ASSERT((output.flags & APP_IMU_FLAG_VIBRATION_HIGH) == 0U);
+
+  fake_acceleration[0] = 0;
+  fake_acceleration[2] = (int16_t)9000;
+  output = Test_AcceptAt(fake_tick_ms + 1U);
+  TEST_ASSERT(output.health == APP_IMU_HEALTH_HEALTHY);
+  TEST_ASSERT((output.flags & APP_IMU_FLAG_DATA_VALID) != 0U);
+  TEST_ASSERT((output.flags & APP_IMU_FLAG_ACCEL_UPDATE_USED) != 0U);
+  TEST_ASSERT((output.flags & APP_IMU_FLAG_VIBRATION_HIGH) != 0U);
+}
+
+static void Test_RecoveryRequiresAcceptedGravityAndLowVibration(void)
+{
+  Test_ResetAndCalibrate(7000U);
+  AppImuOutput output = Test_AcceptAt(fake_tick_ms);
+  const uint32_t last_good_tick_ms = output.last_good_tick_ms;
+  output = Test_BusyAt(last_good_tick_ms + ROBOT_CONFIG_IMU_STALE_TIMEOUT_MS);
+  TEST_ASSERT(output.health == APP_IMU_HEALTH_TRANSIENT_DEGRADED);
+
+  output = Test_AcceptAt(fake_tick_ms + 1U);
+  TEST_ASSERT(output.stable_sample_count == 1U);
+
+  fake_acceleration[0] = (int16_t)5793;
+  fake_acceleration[2] = (int16_t)5793;
+  output = Test_AcceptAt(fake_tick_ms + 1U);
+  TEST_ASSERT(output.health == APP_IMU_HEALTH_RECOVERING);
+  TEST_ASSERT(output.stable_sample_count == 0U);
+  TEST_ASSERT((output.flags & APP_IMU_FLAG_ACCEL_UPDATE_USED) == 0U);
+  TEST_ASSERT((output.flags & APP_IMU_FLAG_VIBRATION_HIGH) == 0U);
+
+  fake_acceleration[0] = 0;
+  fake_acceleration[2] = (int16_t)8192;
+  output = Test_AcceptAt(fake_tick_ms + 1U);
+  TEST_ASSERT(output.stable_sample_count == 1U);
+
+  fake_acceleration[2] = (int16_t)9000;
+  output = Test_AcceptAt(fake_tick_ms + 1U);
+  TEST_ASSERT(output.health == APP_IMU_HEALTH_RECOVERING);
+  TEST_ASSERT(output.stable_sample_count == 0U);
+  TEST_ASSERT((output.flags & APP_IMU_FLAG_ACCEL_UPDATE_USED) != 0U);
+  TEST_ASSERT((output.flags & APP_IMU_FLAG_VIBRATION_HIGH) != 0U);
+
+  fake_acceleration[2] = (int16_t)8192;
+  output = Test_AcceptAt(fake_tick_ms + 1U);
+  TEST_ASSERT(output.stable_sample_count == 1U);
+
+  fake_acceleration[0] = (int16_t)16000;
+  fake_tick_ms++;
+  TEST_ASSERT(AppImu_Process(fake_tick_ms, &output) == BSP_ERROR);
+  TEST_ASSERT(output.health == APP_IMU_HEALTH_TRANSIENT_DEGRADED);
+  TEST_ASSERT(output.stable_sample_count == 0U);
+
+  fake_acceleration[0] = 0;
+  for (uint32_t sample_index = 1U; sample_index < ROBOT_CONFIG_IMU_RECOVERY_STABLE_SAMPLES;
+       ++sample_index) {
+    output = Test_AcceptAt(fake_tick_ms + 1U);
+    TEST_ASSERT(output.health == APP_IMU_HEALTH_RECOVERING);
+    TEST_ASSERT(output.stable_sample_count == sample_index);
+  }
+  output = Test_AcceptAt(fake_tick_ms + 1U);
+  TEST_ASSERT(output.health == APP_IMU_HEALTH_HEALTHY);
+  TEST_ASSERT(output.stable_sample_count == ROBOT_CONFIG_IMU_RECOVERY_STABLE_SAMPLES);
+}
+
 int main(void)
 {
   Test_StaleBoundaryAndStableRecovery();
@@ -265,6 +393,10 @@ int main(void)
   Test_BackoffDoesNotBlockSnapshotRefresh();
   Test_StaleDoesNotDowngradePersistentFault();
   Test_MotionUsabilityUsesCurrentTime();
+  Test_SpikeUsesLastAcceptedBaselineAndAccumulatedTime();
+  Test_LongTimestampGapUsesBoundedAccumulatedTime();
+  Test_HealthyObservationGatesDoNotDegrade();
+  Test_RecoveryRequiresAcceptedGravityAndLowVibration();
   (void)puts("app_imu 测试通过");
   return EXIT_SUCCESS;
 }

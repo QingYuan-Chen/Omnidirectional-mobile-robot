@@ -30,15 +30,18 @@
 
 /*
  * imu_filter 与 imu_output 由唯一 IMU 任务独占更新，其他任务只读取 runtime_snapshot 副本。
- * previous_* 保存最近一次已观察样本，既用于时间戳连续性也用于突变差分；
- * calibration_gyro_bias_rad_s 是估计器重置时的可靠初始零偏，不随输出低通变化。
+ * previous_sensor_timestamp 保存最近观察到的原始帧，用于时间戳连续性诊断；
+ * accepted_* 只保存最近一次通过质量门的向量，作为突变比较基线。等待进入 ESKF 的
+ * 时间戳步数单独累计，避免尖峰帧被拒绝后丢失实际积分时间。calibration_gyro_bias_rad_s
+ * 是估计器重置时的可靠初始零偏，不随输出低通变化。
  */
 static ImuEskf imu_filter;
 static AppImuOutput imu_output;
 static bool imu_calibrated;
 static uint32_t previous_sensor_timestamp;
-static float previous_acceleration_mps2[3];
-static float previous_angular_rate_rad_s[3];
+static uint32_t pending_filter_timestamp_steps;
+static float accepted_acceleration_mps2[3];
+static float accepted_angular_rate_rad_s[3];
 static float calibration_gyro_bias_rad_s[3];
 static uint32_t backoff_index;
 static bool recovery_required;
@@ -124,7 +127,9 @@ static void AppImu_MarkEstimatorFailure(const float acceleration_mps2[3])
   }
 }
 
-static void AppImu_UpdateRecovery(bool timestamp_continuous)
+static void AppImu_UpdateRecovery(bool timestamp_continuous,
+                                  bool accel_update_used,
+                                  bool vibration_high)
 {
   if (!recovery_required) {
     imu_output.health = APP_IMU_HEALTH_HEALTHY;
@@ -133,10 +138,15 @@ static void AppImu_UpdateRecovery(bool timestamp_continuous)
   }
 
   /*
-   * 恢复样本必须同时满足时间戳恰好前进 1 和 ESKF 全状态有限。任一次不连续都会把稳定
-   * 计数清零；达到门槛后一次性清除传感器降级、持久故障、恢复中和估计器故障标志。
+   * 本函数只在突变检查与 ESKF 更新都成功后调用；这两类失败会在各自分支直接清零恢复
+   * 状态。剩余严格资格只用于故障恢复：时间戳必须连续、滤波器已初始化且全状态有限、
+   * 当前加速度观测确实参与校正，并且没有高振动。任一条件失败都清零连续计数；正常
+   * 健康运行不会因单次观测拒绝或高振动直接停车。
    */
-  if (timestamp_continuous && ImuEskf_IsStateFinite(&imu_filter)) {
+  const bool stable_sample =
+    timestamp_continuous && imu_filter.initialized && ImuEskf_IsStateFinite(&imu_filter) &&
+    accel_update_used && !vibration_high;
+  if (stable_sample) {
     imu_output.stable_sample_count = AppImu_SaturatingIncrement(imu_output.stable_sample_count);
   } else {
     imu_output.stable_sample_count = 0U;
@@ -174,8 +184,8 @@ static bool AppImu_IsSpike(const float acceleration_mps2[3], const float angular
   float acceleration_delta[3];
   float angular_rate_delta[3];
   for (uint32_t axis = 0U; axis < 3U; ++axis) {
-    acceleration_delta[axis] = acceleration_mps2[axis] - previous_acceleration_mps2[axis];
-    angular_rate_delta[axis] = angular_rate_rad_s[axis] - previous_angular_rate_rad_s[axis];
+    acceleration_delta[axis] = acceleration_mps2[axis] - accepted_acceleration_mps2[axis];
+    angular_rate_delta[axis] = angular_rate_rad_s[axis] - accepted_angular_rate_rad_s[axis];
   }
 
   return AppImu_VectorNorm(acceleration_delta) > ROBOT_CONFIG_IMU_ACCEL_SPIKE_LIMIT_MPS2 ||
@@ -293,9 +303,10 @@ BspStatus AppImu_Calibrate(void)
   memset(&imu_output, 0, sizeof(imu_output));
   imu_calibrated = false;
   previous_sensor_timestamp = 0U;
+  pending_filter_timestamp_steps = 0U;
   backoff_index = 0U;
-  memset(previous_acceleration_mps2, 0, sizeof(previous_acceleration_mps2));
-  memset(previous_angular_rate_rad_s, 0, sizeof(previous_angular_rate_rad_s));
+  memset(accepted_acceleration_mps2, 0, sizeof(accepted_acceleration_mps2));
+  memset(accepted_angular_rate_rad_s, 0, sizeof(accepted_angular_rate_rad_s));
   memset(calibration_gyro_bias_rad_s, 0, sizeof(calibration_gyro_bias_rad_s));
   recovery_required = false;
   imu_output.flags = APP_IMU_FLAG_SENSOR_PRESENT;
@@ -390,18 +401,18 @@ BspStatus AppImu_Calibrate(void)
   imu_calibrated = true;
   /*
    * 标定均值同时建立 ESKF、输出低通和突变比较的共同初值。对外角速度初值为零，因为
-   * 静止均值已作为陀螺零偏；previous_angular_rate 保留未扣偏均值以匹配后续原始差分。
+   * 静止均值已作为陀螺零偏；accepted_angular_rate 保留未扣偏均值以匹配后续原始差分。
    */
   memcpy(calibration_gyro_bias_rad_s, angular_rate_mean, sizeof(calibration_gyro_bias_rad_s));
   previous_sensor_timestamp = latest_sample.sensor_timestamp;
   imu_output.raw_sample = latest_sample;
   memcpy(imu_output.acceleration_mps2, acceleration_mean, sizeof(acceleration_mean));
   memcpy(imu_output.filtered_acceleration_mps2, acceleration_mean, sizeof(acceleration_mean));
-  memcpy(previous_acceleration_mps2, acceleration_mean, sizeof(acceleration_mean));
+  memcpy(accepted_acceleration_mps2, acceleration_mean, sizeof(acceleration_mean));
   for (uint32_t axis = 0U; axis < 3U; ++axis) {
     imu_output.angular_rate_rad_s[axis] = 0.0f;
     imu_output.filtered_angular_rate_rad_s[axis] = 0.0f;
-    previous_angular_rate_rad_s[axis] = angular_rate_mean[axis];
+    accepted_angular_rate_rad_s[axis] = angular_rate_mean[axis];
   }
   imu_output.temperature_celsius = (float)latest_sample.temperature / 256.0f;
   imu_output.sensor_timestamp = latest_sample.sensor_timestamp;
@@ -485,6 +496,8 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
      * UINT32_MAX 填入普通字段充当哨兵。
      */
     previous_sensor_timestamp = sample.sensor_timestamp;
+    pending_filter_timestamp_steps =
+      AppImu_SaturatingAdd(pending_filter_timestamp_steps, timestamp_step);
     imu_output.dropped_sample_count = AppImu_SaturatingAdd(imu_output.dropped_sample_count, timestamp_step - 1U);
     imu_output.flags |= APP_IMU_FLAG_DATA_STALE;
     imu_output.flags &=
@@ -505,15 +518,15 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
   float angular_rate_rad_s[3];
   AppImu_ConvertToBodySi(&sample, acceleration_mps2, angular_rate_rad_s);
   previous_sensor_timestamp = sample.sensor_timestamp;
+  pending_filter_timestamp_steps =
+    AppImu_SaturatingAdd(pending_filter_timestamp_steps, timestamp_step);
   if (AppImu_IsSpike(acceleration_mps2, angular_rate_rad_s)) {
     imu_output.spike_reject_count = AppImu_SaturatingIncrement(imu_output.spike_reject_count);
     imu_output.consecutive_spike_count = AppImu_SaturatingIncrement(imu_output.consecutive_spike_count);
     /*
-     * 被拒绝的尖峰仍成为下一次突变比较基线，避免“正常→尖峰”和“尖峰→正常”把一个
-     * 单点异常重复计为两次。该样本只更新比较基线，不更新输出、last_good_tick 或 ESKF。
+     * 被拒绝的尖峰只推进原始帧时间戳和待积分时间，不更新突变向量基线、输出或 ESKF。
+     * 下一帧仍与最后接受样本比较，因此“正常→单点尖峰→正常”只拒绝中间异常一次。
      */
-    memcpy(previous_acceleration_mps2, acceleration_mps2, sizeof(previous_acceleration_mps2));
-    memcpy(previous_angular_rate_rad_s, angular_rate_rad_s, sizeof(previous_angular_rate_rad_s));
     imu_output.flags |= APP_IMU_FLAG_SAMPLE_SPIKE;
     AppImu_MarkSensorFailure(
       imu_output.consecutive_spike_count >= ROBOT_CONFIG_IMU_PERSISTENT_FAULT_THRESHOLD);
@@ -521,7 +534,7 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
     *output = imu_output;
     return BSP_ERROR;
   }
-  float delta_time_s = (float)timestamp_step / ROBOT_CONFIG_IMU_ODR_HZ;
+  float delta_time_s = (float)pending_filter_timestamp_steps / ROBOT_CONFIG_IMU_ODR_HZ;
   if (delta_time_s > APP_IMU_MAX_FILTER_DELTA_TIME_S) {
     delta_time_s = APP_IMU_MAX_FILTER_DELTA_TIME_S;
   }
@@ -535,6 +548,11 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
   if (!ImuEskf_Update(
         &imu_filter, angular_rate_rad_s, acceleration_mps2, delta_time_s, &accel_update_used, &vibration_high)) {
     AppImu_MarkEstimatorFailure(acceleration_mps2);
+    /*
+     * 估计器重建以当前加速度为新的时间起点；无论重建是否成功，旧累计时间都不能再次
+     * 施加到下一次更新，否则会对同一间隔重复积分。
+     */
+    pending_filter_timestamp_steps = 0U;
     AppImu_UpdateStaleState(now_ms);
     *output = imu_output;
     return BSP_ERROR;
@@ -552,8 +570,9 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
   }
   AppImu_UpdateFilteredOutput(
     acceleration_mps2, imu_output.angular_rate_rad_s, delta_time_s);
-  memcpy(previous_acceleration_mps2, acceleration_mps2, sizeof(previous_acceleration_mps2));
-  memcpy(previous_angular_rate_rad_s, angular_rate_rad_s, sizeof(previous_angular_rate_rad_s));
+  memcpy(accepted_acceleration_mps2, acceleration_mps2, sizeof(accepted_acceleration_mps2));
+  memcpy(accepted_angular_rate_rad_s, angular_rate_rad_s, sizeof(accepted_angular_rate_rad_s));
+  pending_filter_timestamp_steps = 0U;
   imu_output.temperature_celsius = (float)sample.temperature / 256.0f;
   imu_output.sensor_timestamp = sample.sensor_timestamp;
   imu_output.host_tick_ms = sample.host_tick_ms;
@@ -577,7 +596,7 @@ BspStatus AppImu_Process(uint32_t now_ms, AppImuOutput *output)
   if (vibration_high) {
     imu_output.flags |= APP_IMU_FLAG_VIBRATION_HIGH;
   }
-  AppImu_UpdateRecovery(timestamp_step == 1U);
+  AppImu_UpdateRecovery(timestamp_step == 1U, accel_update_used, vibration_high);
   AppImu_CopyFilterState();
   *output = imu_output;
   return BSP_OK;

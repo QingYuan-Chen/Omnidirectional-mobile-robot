@@ -47,7 +47,8 @@ typedef enum {
  * 互斥健康等级，供安全任务作粗粒度决策。
  * 短暂总线失败或单次突变进入 TRANSIENT_DEGRADED；连续总线读错或连续突变升级为
  * PERSISTENT_SENSOR_FAULT。重复时间戳只返回 BUSY，过大时间戳跳变单次进入降级，不计入
- * 上述连续升级计数。重新取得样本后必须经过 RECOVERING 的稳定门槛，不能一帧就恢复。
+ * 上述连续升级计数。重新取得样本后必须经过 RECOVERING 的稳定门槛：连续样本需同时
+ * 通过时间戳、突变、ESKF 有限状态、加速度观测采用和低振动检查，不能一帧就恢复。
  * ESTIMATOR_FAULT 独立于传感器总线故障。
  */
 typedef enum {
