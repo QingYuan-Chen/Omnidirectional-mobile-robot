@@ -188,3 +188,11 @@
 - 主机测试 12/12 通过；Debug/Release 固件全量构建均为 67/67，RAM 均为 47,088 B，Flash 为 85,348/48,416 B。相对上一提交，静态 RAM 增加 392/392 B，Flash 增加 1,460/700 B；带许可代际的深度 8 命令队列元素由 12 B 增至 16 B，另从既有 FreeRTOS 固定堆中多使用 32 B。6 个受影响源文件通过 `-Wall -Wextra -Wshadow -Wconversion -Werror` 和 GCC `-fanalyzer`。
 - 原工程架构适配/参数遗漏与工作完成质量/测试充分性两路独立审批均给出 `APPROVE`，无软件阻断项。审查确认当前 CMSIS/FreeRTOS 实现允许在调度器挂起区执行零等待队列写入；真实任务时序、树莓派遥测解析同步和板上项目仍保留为后续验收。
 - 仍未执行 M1.3、UART4 实机收发、真实 IMU 故障注入、MA 低功率运动、WCET、抖动和任务栈水位板测；这些项目继续延期到 M2 单电机调试阶段，不把软件回归结果写成板上验收。
+
+## 2026-07-18：完成 M2 板测提交一——可配置调试串口路由
+
+- 新增 `app_debug_uart_config.h` 作为调试命令、遥测和端口统计的唯一选口位置；M2 板测镜像选择 `BSP_UART_ROS`，对应板载 Type-C 的 USART2。切换没有修改 `.ioc`、PD5/PD6、UART4 BSP 或 230400/8N1 配置。
+- `commTask` 的字节接收、异步帧发送和两处 UART 统计读取统一使用同一个 `debug_uart_port`；运行快照字段由物理端口绑定的 `uart_ttl` 改为 `debug_uart`，遥测错误汇总随配置端口切换。
+- USART2 当前只承载既有大写 ASCII 板测协议，不做 ASCII/X-Protocol 自动探测。M5 启用正式 X-Protocol 前必须先把集中配置迁回 `BSP_UART_TTL/UART4`，最终 STM32—树莓派—电脑层级不变。
+- 新增 `app_debug_uart_config` 主机测试，锁定当前 M2 镜像必须选择 USART2；全量主机测试 13/13 通过。Debug/Release 固件全量构建均为 67/67，RAM 均为 47,088 B，Flash 为 85,372/48,424 B；相对上一提交 RAM 不变，Flash 增加 24/8 B。
+- `app_tasks.c` 使用 ARM GCC 追加 `-Wextra -Wshadow -Wconversion -Werror -fanalyzer` 检查并通过；`git diff --check` 与调试链硬编码扫描作为提交前复核。Type-C/USART2 实机收发仍未执行，下一动作是在电机动力关闭或车轮完全悬空时接收遥测并发送 `STATUS`。

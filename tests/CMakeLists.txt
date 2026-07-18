@@ -10,6 +10,13 @@ enable_testing()
 
 set(APP_DIR "${CMAKE_CURRENT_LIST_DIR}/../firmware/r750_mec_cubemx/R750_MEC_Lower/App")
 
+add_executable(test_app_debug_uart_config
+  test_app_debug_uart_config.c
+)
+target_include_directories(test_app_debug_uart_config PRIVATE "${APP_DIR}/Inc" "${APP_DIR}/Bsp/Inc")
+target_compile_options(test_app_debug_uart_config PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME app_debug_uart_config COMMAND test_app_debug_uart_config)
+
 add_executable(test_app_control_timing
   test_app_control_timing.c
   "${APP_DIR}/Src/app_control_timing.c"

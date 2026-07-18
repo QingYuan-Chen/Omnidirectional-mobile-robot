@@ -4,6 +4,7 @@
 #include "app_comm_protocol.h"
 #include "app_control_timebase.h"
 #include "app_control_timing.h"
+#include "app_debug_uart_config.h"
 #include "app_encoder_accumulator.h"
 #include "app_imu.h"
 #include "app_motion_gate.h"
@@ -54,6 +55,10 @@ _Static_assert(ROBOT_CONFIG_MOTOR_COMMAND_QUEUE_DEPTH > 0U,
                "motor command queue depth must be non-zero");
 _Static_assert(ROBOT_CONFIG_TELEMETRY_PERIOD_MS > 0U,
                "telemetry period must be non-zero");
+_Static_assert(
+  ROBOT_CONFIG_DEBUG_UART_PORT == BSP_UART_ROS ||
+  ROBOT_CONFIG_DEBUG_UART_PORT == BSP_UART_TTL,
+  "debug UART port must name a supported BSP UART");
 
 static osEventFlagsId_t runtime_events;
 static osMessageQueueId_t motor_command_queue;
@@ -304,11 +309,11 @@ static void AppTasks_FillTelemetryInput(
   input->imu_sample_age_ms = snapshot->imu.sample_age_ms;
   input->imu_health = snapshot->imu.health;
   input->uart_error_count = AppTasks_SumUartErrors(
-    &snapshot->communication.uart_ttl);
+    &snapshot->communication.debug_uart);
   input->uart_rx_overflow_count =
-    snapshot->communication.uart_ttl.rx_buffer_overflow_count;
+    snapshot->communication.debug_uart.rx_buffer_overflow_count;
   input->uart_tx_fault_count = AppTasks_SumUartTxFaults(
-    &snapshot->communication.uart_ttl);
+    &snapshot->communication.debug_uart);
   input->command_reject_count = AppCommProtocol_GetRejectedCount(
     &snapshot->communication.protocol);
   input->command_queue_drop_count =
@@ -705,6 +710,7 @@ static void AppTasks_Comm(void *argument)
 
   AppCommProtocol protocol;
   AppCommProtocol_Init(&protocol);
+  const BspUartPort debug_uart_port = ROBOT_CONFIG_DEBUG_UART_PORT;
   AppCommRuntimeSnapshot communication;
   memset(&communication, 0, sizeof(communication));
   uint32_t last_telemetry_ms = HAL_GetTick() - ROBOT_CONFIG_TELEMETRY_PERIOD_MS;
@@ -719,7 +725,7 @@ static void AppTasks_Comm(void *argument)
     BspUart_Service();
 
     uint8_t byte;
-    while (BspUart_ReadByte(BSP_UART_TTL, &byte)) {
+    while (BspUart_ReadByte(debug_uart_port, &byte)) {
       AppCommCommand command;
       const AppCommFeedResult result = AppCommProtocol_FeedByte(
         &protocol, byte, &command);
@@ -773,7 +779,7 @@ static void AppTasks_Comm(void *argument)
        */
       force_telemetry = false;
       (void)AppCommProtocol_GetStats(&protocol, &communication.protocol);
-      (void)BspUart_GetStats(BSP_UART_TTL, &communication.uart_ttl);
+      (void)BspUart_GetStats(debug_uart_port, &communication.debug_uart);
 
       taskENTER_CRITICAL();
       runtime_snapshot.communication = communication;
@@ -791,7 +797,7 @@ static void AppTasks_Comm(void *argument)
         communication.telemetry_format_error_count = AppTasks_AddSaturated(
           communication.telemetry_format_error_count, 1U);
       } else if (BspUart_WriteAsync(
-                   BSP_UART_TTL, telemetry_frame, telemetry_length) != BSP_OK) {
+                   debug_uart_port, telemetry_frame, telemetry_length) != BSP_OK) {
         communication.telemetry_enqueue_drop_count = AppTasks_AddSaturated(
           communication.telemetry_enqueue_drop_count, 1U);
       } else {
@@ -801,7 +807,7 @@ static void AppTasks_Comm(void *argument)
     }
 
     (void)AppCommProtocol_GetStats(&protocol, &communication.protocol);
-    (void)BspUart_GetStats(BSP_UART_TTL, &communication.uart_ttl);
+    (void)BspUart_GetStats(debug_uart_port, &communication.debug_uart);
     taskENTER_CRITICAL();
     runtime_snapshot.communication = communication;
     taskEXIT_CRITICAL();

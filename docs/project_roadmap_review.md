@@ -68,6 +68,8 @@
 | 任务表 MotorTask/CommRx/CommTx… | 实际为 control/safety/comm/imu/monitor 五任务（FreeRTOS框架规划.md 为准） |
 | UART 分工"UART4 可选" | 钉死：USART2 = ROS X-Protocol，UART4 = 人类调试台（M2 起使用） |
 
+M2 板测存在一个受控的临时路由例外：板载 Type-C 对应 USART2 先承载 ASCII 命令和遥测，以完成电脑直连采集；最终分工不变，M5 启用 X-Protocol 前必须把调试链迁回 UART4，且不得在 USART2 同时自动探测两种协议。
+
 ## 5. 风险清单（按优先级）
 
 1. **麦轮符号/轮序错误**（M4）——用 4.1 的约定文档 + 逐轮开环标定压制；

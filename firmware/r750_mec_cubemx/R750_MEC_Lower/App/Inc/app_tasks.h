@@ -35,14 +35,15 @@ typedef enum {
 
 /*
  * 通信任务拥有的累计诊断快照。
- * protocol 和 uart_ttl 分别来自解析器与 UART BSP；queue_drop 表示运动命令未进入控制
- * 队列；telemetry_enqueue_drop 表示完整遥测帧未进入发送队列；format_error 表示本地
- * 缓冲容量不足或参数异常；motion_gate_reject 表示普通命令在运行许可关闭时被前置拒绝，
+ * protocol 和 debug_uart 分别来自解析器与当前配置的调试 UART；queue_drop 表示运动
+ * 命令未进入控制队列；telemetry_enqueue_drop 表示完整遥测帧未进入发送队列；
+ * format_error 表示本地缓冲容量不足或参数异常；motion_gate_reject 表示普通命令在
+ * 运行许可关闭时被前置拒绝，
  * estop_command_count 记录绕过普通队列的急停命令。
  */
 typedef struct {
   AppCommProtocolStats protocol;
-  BspUartStats uart_ttl;
+  BspUartStats debug_uart;
   uint32_t command_queue_drop_count;
   uint32_t telemetry_enqueued_count;
   uint32_t telemetry_enqueue_drop_count;

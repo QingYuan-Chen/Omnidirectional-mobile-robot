@@ -102,6 +102,8 @@ TIM7 ISR 允许执行的动作限定为：读取 DWT 时间戳、快照编码器
 | 电池 ADC 所有者 | `monitorTask` | `commTask` | 软件已实现 | `app_tasks.c` | 全局调用点扫描、并发审查 |
 | UART4 TX | 阻塞 `HAL_UART_Transmit()` | 中断驱动非阻塞队列 | 软件已实现、待板测 | `bsp_uart.c` | host 状态/队列测试、板上拥塞测试 |
 
+> M2 Type-C 板测临时例外：应用层调试端口已集中配置为 `BSP_UART_ROS/USART2`，复用同一 UART BSP 与异步发送队列；上述 UART4 行保留 G1.3 原始资源审计事实。M5 启用正式 X-Protocol 前必须迁回 UART4，禁止 USART2 双协议自动探测。
+
 ## 四个提交的独立验收
 
 ### G1.0：资源审查

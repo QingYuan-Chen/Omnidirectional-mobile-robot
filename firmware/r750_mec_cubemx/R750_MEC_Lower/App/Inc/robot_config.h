@@ -12,7 +12,7 @@
  * 无权扩大。
  */
 
-/* UART4 当前承载临时试验命令与遥测；发送深度不含环形队列内部的判空额外槽位。 */
+/* 发送深度不含环形队列内部为判空保留的额外槽位。 */
 #define ROBOT_CONFIG_UART_BAUDRATE                 (230400U)
 #define ROBOT_CONFIG_UART_LINE_BUFFER_SIZE         (64U)
 #define ROBOT_CONFIG_UART_TX_QUEUE_DEPTH           (4U)

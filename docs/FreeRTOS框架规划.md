@@ -37,7 +37,7 @@ CMSIS-RTOS2 的 `stack_size` 单位是字节。GCC 静态栈报告中，ESKF 最
 
 ## G1.3 临时命令与遥测链路
 
-- UART4 使用 230400 baud、8N1。命令为大写 ASCII：`ARM <seq>`、`PWM <seq> <value>`、`STOP <seq>`、`ESTOP`、`STATUS`；LF 结束，可在 LF 前带一个 CR。LF 前最多保存 64 B，第 65 B 触发行溢出并丢弃到下一次 LF。
+- 调试端口由 `app_debug_uart_config.h` 集中选择。M2 板测镜像使用 Type-C 对应的 USART2，230400 baud、8N1；M5 启用正式 X-Protocol 前迁回 UART4，禁止在 USART2 同时运行两种协议。命令为大写 ASCII：`ARM <seq>`、`PWM <seq> <value>`、`STOP <seq>`、`ESTOP`、`STATUS`；LF 结束，可在 LF 前带一个 CR。LF 前最多保存 64 B，第 65 B 触发行溢出并丢弃到下一次 LF。
 - `ARM/PWM/STOP` 共用 32 位半区间单调序号。解析通过后，只有实时运动许可开放且命令成功入队才提交序号；许可关闭或队列已满都允许上位机用同一序号重试。格式错误、数值溢出、越界、旧序号、许可拒绝和队列满都不会刷新 500 ms 电机命令超时。
 - `ESTOP` 不进入普通命令队列，直接进入既有任务级执行器仲裁区，锁存故障并调用 Emergency Coast；远程命令不能清除，遥测明确给出“必须系统复位”。`STATUS` 只请求状态帧，不采样 ADC、不改变运动状态。
 - UART TX 使用 `HAL_UART_Transmit_IT()`。单任务生产者与完成 ISR/任务恢复者通过 C11 原子三态串行化队首所有权；回调串接下一帧，队满、起发失败和完成恢复均计数，业务路径不调用阻塞发送。
