@@ -55,7 +55,49 @@ Assert-True (@($negative | Where-Object { $_.command -like 'PWM * -80' }).Count 
 Assert-Throws {
     New-G2FirstMotionSchedule -Direction Positive -PeakPwm 201
 } '首动软件上限为 200'
+$deadzoneProbe = @(New-G2DeadzoneProbeSchedule `
+    -Direction Negative `
+    -PeakPwm 840 `
+    -HoldMilliseconds 1000 `
+    -KeepAliveMilliseconds 250 `
+    -SequenceStart 100)
+Assert-True (@($deadzoneProbe | Where-Object { $_.command -like 'PWM * -840' }).Count -eq 4) '死区探测允许固件硬上限'
+Assert-Throws {
+    New-G2DeadzoneProbeSchedule -Direction Negative -PeakPwm 841
+} '死区探测拒绝超过固件硬上限'
 Assert-True ((Get-G2UInt32Delta -Previous 4294967294 -Current 1) -eq 3) 'uint32 回绕差值'
+
+$deadzoneRows = @(
+    [pscustomobject]@{
+        encoder_total_1 = 100
+        encoder_total_2 = 0
+        encoder_total_3 = 0
+        encoder_total_4 = 0
+    },
+    [pscustomobject]@{
+        encoder_total_1 = -1200
+        encoder_total_2 = 1
+        encoder_total_3 = 0
+        encoder_total_4 = 0
+    }
+)
+$deadzoneMotion = Measure-G2DeadzoneMotion -Rows $deadzoneRows -Direction Negative
+Assert-True ($deadzoneMotion.moved) '负向累计超过阈值时自动判定起转'
+Assert-True ($deadzoneMotion.expected_direction_excursion_counts -eq 1300) '记录期望方向最大位移'
+Assert-True (-not $deadzoneMotion.wrong_direction_detected) '正确符号不触发反向异常'
+
+$wrongDirectionRows = @(
+    $deadzoneRows[0],
+    [pscustomobject]@{
+        encoder_total_1 = 1200
+        encoder_total_2 = 0
+        encoder_total_3 = 0
+        encoder_total_4 = 0
+    }
+)
+$wrongDirectionMotion = Measure-G2DeadzoneMotion -Rows $wrongDirectionRows -Direction Negative
+Assert-True (-not $wrongDirectionMotion.moved) '编码器符号错误时不接受起转'
+Assert-True ($wrongDirectionMotion.wrong_direction_detected) '编码器符号错误被显式标记'
 
 function New-TestTelemetryRow {
     param(

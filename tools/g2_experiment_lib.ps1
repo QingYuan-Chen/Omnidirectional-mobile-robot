@@ -70,6 +70,78 @@
     return @($schedule)
 }
 
+function New-G2DeadzoneProbeSchedule {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Positive', 'Negative')]
+        [string]$Direction,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, 840)]
+        [int]$PeakPwm,
+
+        [ValidateRange(250, 10000)]
+        [int]$HoldMilliseconds = 1000,
+
+        [ValidateRange(50, 400)]
+        [int]$KeepAliveMilliseconds = 250,
+
+        [ValidateRange(1, 4294967295)]
+        [uint32]$SequenceStart = 1
+    )
+
+    $drivePwm = if ($Direction -ceq 'Positive') { $PeakPwm } else { -$PeakPwm }
+    $schedule = [Collections.Generic.List[object]]::new()
+    $schedule.Add([pscustomobject]@{
+        elapsed_ms = [uint64]0
+        command = 'STATUS'
+    })
+
+    [uint64]$sequence = $SequenceStart
+    $armAt = [uint64]1000
+    $driveAt = [uint64]1250
+    $driveEnd = $driveAt + [uint64]$HoldMilliseconds
+    $schedule.Add([pscustomobject]@{
+        elapsed_ms = $armAt
+        command = "ARM $sequence"
+    })
+    $sequence++
+
+    for ($sendAt = $driveAt;
+         $sendAt -lt $driveEnd;
+         $sendAt += [uint64]$KeepAliveMilliseconds) {
+        if ($sequence -gt [uint64][uint32]::MaxValue) {
+            throw '命令序号超过 uint32 范围'
+        }
+        $schedule.Add([pscustomobject]@{
+            elapsed_ms = $sendAt
+            command = "PWM $sequence $drivePwm"
+        })
+        $sequence++
+    }
+
+    if ($sequence -gt [uint64][uint32]::MaxValue) {
+        throw '命令序号超过 uint32 范围'
+    }
+    $schedule.Add([pscustomobject]@{
+        elapsed_ms = $driveEnd
+        command = "STOP $sequence"
+    })
+
+    $statusAt = $driveEnd + [uint64]$PeakPwm + [uint64]500
+    $schedule.Add([pscustomobject]@{
+        elapsed_ms = $statusAt
+        command = 'STATUS'
+    })
+
+    [void](Test-G2FirstMotionSchedule `
+        -Schedule $schedule `
+        -Direction $Direction `
+        -PeakPwm $PeakPwm `
+        -MaximumKeepAliveMilliseconds 400)
+    return @($schedule)
+}
+
 function Test-G2FirstMotionSchedule {
     param(
         [Parameter(Mandatory = $true)]
@@ -80,7 +152,7 @@ function Test-G2FirstMotionSchedule {
         [string]$Direction,
 
         [Parameter(Mandatory = $true)]
-        [ValidateRange(1, 200)]
+        [ValidateRange(1, 840)]
         [int]$PeakPwm,
 
         [ValidateRange(50, 499)]
@@ -153,6 +225,77 @@ function Test-G2FirstMotionSchedule {
         throw '首动计划结构不完整'
     }
     return $true
+}
+
+function Measure-G2DeadzoneMotion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Rows,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Positive', 'Negative')]
+        [string]$Direction,
+
+        [ValidateRange(1, 1000000)]
+        [int64]$MotionThresholdCounts = 1000,
+
+        [ValidateRange(1, 1000000)]
+        [int64]$OtherChannelLimitCounts = 1000
+    )
+
+    if ($Rows.Count -lt 2) {
+        throw '死区判定至少需要两行遥测'
+    }
+    foreach ($channel in 1..4) {
+        $propertyName = "encoder_total_$channel"
+        if ($null -eq $Rows[0].PSObject.Properties[$propertyName]) {
+            throw "遥测缺少字段：$propertyName"
+        }
+    }
+
+    $directionSign = if ($Direction -ceq 'Positive') { [int64]1 } else { [int64]-1 }
+    $baseline = [int64]$Rows[0].encoder_total_1
+    [int64]$expectedExcursion = 0
+    [int64]$oppositeExcursion = 0
+    [int64]$otherChannelMaximum = 0
+
+    foreach ($row in $Rows) {
+        $signedDisplacement = $directionSign * ([int64]$row.encoder_total_1 - $baseline)
+        if ($signedDisplacement -gt $expectedExcursion) {
+            $expectedExcursion = $signedDisplacement
+        }
+        if (-$signedDisplacement -gt $oppositeExcursion) {
+            $oppositeExcursion = -$signedDisplacement
+        }
+
+        foreach ($channel in 2..4) {
+            $propertyName = "encoder_total_$channel"
+            $channelBaseline = [int64]$Rows[0].$propertyName
+            $channelExcursion = [Math]::Abs([int64]$row.$propertyName - $channelBaseline)
+            if ($channelExcursion -gt $otherChannelMaximum) {
+                $otherChannelMaximum = $channelExcursion
+            }
+        }
+    }
+
+    $expectedMotionDetected = $expectedExcursion -ge $MotionThresholdCounts
+    $wrongDirectionDetected = $oppositeExcursion -ge $MotionThresholdCounts
+    $otherChannelMotionDetected = $otherChannelMaximum -ge $OtherChannelLimitCounts
+
+    return [pscustomobject][ordered]@{
+        direction = $Direction
+        motion_threshold_counts = $MotionThresholdCounts
+        other_channel_limit_counts = $OtherChannelLimitCounts
+        expected_direction_excursion_counts = $expectedExcursion
+        opposite_direction_excursion_counts = $oppositeExcursion
+        other_channel_maximum_excursion_counts = $otherChannelMaximum
+        expected_motion_detected = $expectedMotionDetected
+        wrong_direction_detected = $wrongDirectionDetected
+        other_channel_motion_detected = $otherChannelMotionDetected
+        moved = ($expectedMotionDetected -and
+            -not $wrongDirectionDetected -and
+            -not $otherChannelMotionDetected)
+    }
 }
 
 function Get-G2UInt32Delta {
