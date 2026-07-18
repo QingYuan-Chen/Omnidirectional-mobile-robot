@@ -487,6 +487,159 @@ function Measure-G2OperatingPoint {
     }
 }
 
+function Measure-G2Repeatability {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Rows,
+
+        [ValidateRange(2, 20)]
+        [int]$RequiredRepeatCount = 3,
+
+        [ValidateRange(0.1, 100.0)]
+        [double]$PassCvPercent = 5.0,
+
+        [ValidateRange(0.1, 100.0)]
+        [double]$RetestCvPercent = 10.0,
+
+        [ValidateRange(0.1, 100.0)]
+        [double]$MaximumSingleDeviationPercent = 10.0
+    )
+
+    if ($Rows.Count -lt 2) {
+        throw '重复性汇总至少需要两条工作点结果'
+    }
+    if ($RetestCvPercent -lt $PassCvPercent) {
+        throw '复验 CV 门槛不能低于通过门槛'
+    }
+    $requiredColumns = @(
+        'direction',
+        'peak_pwm',
+        'steady_count_rate_cps',
+        'wheel_rpm',
+        'battery_minimum_mv',
+        'accepted'
+    )
+    foreach ($column in $requiredColumns) {
+        if ($null -eq $Rows[0].PSObject.Properties[$column]) {
+            throw "重复性输入缺少字段：$column"
+        }
+    }
+
+    $groups = [Collections.Generic.List[object]]::new()
+    $groupedRows = @($Rows |
+        Group-Object -Property direction, peak_pwm |
+        Sort-Object @{
+            Expression = {
+                if ($_.Group[0].direction -ceq 'Positive') { 0 } else { 1 }
+            }
+        }, @{
+            Expression = { [int]$_.Group[0].peak_pwm }
+        })
+    foreach ($group in $groupedRows) {
+        $samples = @($group.Group)
+        $rpmValues = @($samples | ForEach-Object { [double]$_.wheel_rpm })
+        $rateValues = @($samples | ForEach-Object {
+            [double]$_.steady_count_rate_cps
+        })
+        $rpmMean = [double](($rpmValues | Measure-Object -Average).Average)
+        $rateMean = [double](($rateValues | Measure-Object -Average).Average)
+        $sumSquared = 0.0
+        $maximumDeviation = 0.0
+        foreach ($value in $rpmValues) {
+            $difference = $value - $rpmMean
+            $sumSquared += $difference * $difference
+            if ([Math]::Abs($rpmMean) -gt 0.0) {
+                $deviation = ([Math]::Abs($difference) /
+                    [Math]::Abs($rpmMean)) * 100.0
+                if ($deviation -gt $maximumDeviation) {
+                    $maximumDeviation = $deviation
+                }
+            }
+        }
+        $standardDeviation = if ($samples.Count -gt 1) {
+            [Math]::Sqrt($sumSquared / [double]($samples.Count - 1))
+        } else {
+            0.0
+        }
+        $cvPercent = if ([Math]::Abs($rpmMean) -gt 0.0) {
+            ($standardDeviation / [Math]::Abs($rpmMean)) * 100.0
+        } else {
+            [double]::PositiveInfinity
+        }
+        $allAccepted = @($samples | Where-Object {
+            -not [bool]$_.accepted
+        }).Count -eq 0
+        $screening = if (-not $allAccepted) {
+            'blocked'
+        } elseif ($samples.Count -lt $RequiredRepeatCount) {
+            'incomplete'
+        } elseif ($cvPercent -gt $RetestCvPercent) {
+            'blocked'
+        } elseif ($cvPercent -gt $PassCvPercent -or
+            $maximumDeviation -gt $MaximumSingleDeviationPercent) {
+            'retest'
+        } else {
+            'passed'
+        }
+
+        $groups.Add([pscustomobject][ordered]@{
+            direction = [string]$samples[0].direction
+            peak_pwm = [int]$samples[0].peak_pwm
+            repeat_count = $samples.Count
+            all_captures_accepted = $allAccepted
+            mean_steady_count_rate_cps = $rateMean
+            mean_wheel_rpm = $rpmMean
+            sample_standard_deviation_rpm = $standardDeviation
+            coefficient_of_variation_percent = $cvPercent
+            minimum_wheel_rpm = [double]((
+                $rpmValues | Measure-Object -Minimum).Minimum)
+            maximum_wheel_rpm = [double]((
+                $rpmValues | Measure-Object -Maximum).Maximum)
+            maximum_single_deviation_percent = $maximumDeviation
+            minimum_battery_mv = [uint32]((
+                $samples | Measure-Object -Property battery_minimum_mv -Minimum
+            ).Minimum)
+            screening = $screening
+        })
+    }
+
+    $monotonicByDirection = [ordered]@{}
+    foreach ($direction in @('Positive', 'Negative')) {
+        $directionGroups = @($groups |
+            Where-Object { $_.direction -ceq $direction } |
+            Sort-Object peak_pwm)
+        $monotonic = $directionGroups.Count -gt 1
+        for ($index = 1; $index -lt $directionGroups.Count; $index++) {
+            if ($directionGroups[$index].mean_wheel_rpm -le
+                $directionGroups[$index - 1].mean_wheel_rpm) {
+                $monotonic = $false
+            }
+        }
+        $monotonicByDirection[$direction] = $monotonic
+    }
+    $allGroupsPassed = @($groups | Where-Object {
+        $_.screening -cne 'passed'
+    }).Count -eq 0
+    $allMonotonic = @($monotonicByDirection.Values | Where-Object {
+        -not [bool]$_
+    }).Count -eq 0
+
+    return [pscustomobject][ordered]@{
+        required_repeat_count = $RequiredRepeatCount
+        thresholds = [pscustomobject][ordered]@{
+            pass_cv_percent = $PassCvPercent
+            retest_cv_percent = $RetestCvPercent
+            maximum_single_deviation_percent =
+                $MaximumSingleDeviationPercent
+        }
+        groups = @($groups)
+        monotonic_by_direction = [pscustomobject]$monotonicByDirection
+        all_groups_passed = $allGroupsPassed
+        all_directions_monotonic = $allMonotonic
+        accepted = ($allGroupsPassed -and $allMonotonic)
+    }
+}
+
 function Get-G2UInt32Delta {
     param(
         [Parameter(Mandatory = $true)]
