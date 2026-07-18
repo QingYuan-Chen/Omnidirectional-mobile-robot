@@ -43,9 +43,11 @@ $consistency = [ordered]@{
     raw_bytes_match = ($rawBytes -eq [uint64]$metadata.counts.raw_bytes)
     telemetry_rows_match = ($telemetry.Count -eq [int]$metadata.counts.telemetry_rows)
     command_rows_match = ($commands.Count -eq [int]$metadata.counts.commands_sent)
+    complete_line_partition_match =
+        ([uint64]$metadata.counts.complete_lines -eq
+         ([uint64]$metadata.counts.telemetry_rows +
+          [uint64]$metadata.counts.non_telemetry_lines))
     parse_errors_zero = ([uint64]$metadata.counts.telemetry_parse_errors -eq 0)
-    non_telemetry_lines_zero = ([uint64]$metadata.counts.non_telemetry_lines -eq 0)
-    trailing_characters_zero = ([uint64]$metadata.counts.trailing_partial_characters -eq 0)
 }
 if (@($consistency.Values | Where-Object { -not $_ }).Count -gt 0) {
     throw '采集产物计数不一致或包含解析异常，拒绝生成 G2 摘要'
@@ -59,6 +61,11 @@ $analysis = [ordered]@{
     firmware_commit = [string]$metadata.firmware_commit
     capture_repository_commit = [string]$metadata.repository_commit
     artifact_consistency = $consistency
+    capture_boundaries = [ordered]@{
+        non_telemetry_lines = [uint64]$metadata.counts.non_telemetry_lines
+        trailing_partial_characters = [uint64]$metadata.counts.trailing_partial_characters
+        note = 'A serial capture may begin or end inside a frame; raw bytes remain authoritative.'
+    }
     metrics = $measurement.summary
 }
 
