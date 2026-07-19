@@ -180,6 +180,12 @@ try {
             60 -and
         $firstPlan.schedule.expected_full_pwm_plateau_ms -eq 1211) `
         '子计划冻结冷却时间和延长后的满PWM平台'
+    Assert-True (
+        -not $firstPlan.controlled_conditions.temperature_measurement_required -and
+        -not $firstPlan.controlled_conditions.temperature_record_required -and
+        -not $firstPlan.controlled_conditions.temperature_is_acceptance_gate -and
+        -not $batchManifest.preregistered_decision.temperature_baseline_enabled) `
+        '独立验证明确关闭测温、温度记录和温度接受门'
 } finally {
     if (Test-Path -LiteralPath $temporaryDirectory) {
         Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force

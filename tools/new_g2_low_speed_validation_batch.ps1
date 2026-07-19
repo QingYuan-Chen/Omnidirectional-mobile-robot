@@ -87,7 +87,9 @@ for ($repetition = 1; $repetition -le 3; $repetition++) {
             minimum_cooldown_before_plan_seconds = 60
             battery_preflight_minimum_mv = 11500
             battery_preflight_maximum_mv = 11750
-            motor_temperature_value_or_unavailable_note_required = $true
+            temperature_measurement_required = $false
+            temperature_record_required = $false
+            temperature_is_acceptance_gate = $false
         }
         schedule = [ordered]@{
             capture_start_ms = 750
@@ -172,6 +174,7 @@ $batchManifest = [ordered]@{
         maximum_repetitions = 3
         no_post_hoc_window_selection = $true
         original_short_window_gate_remains_recorded_as_failed = $true
+        temperature_baseline_enabled = $false
     }
     safety = [ordered]@{
         execute_one_plan_at_a_time = $true
