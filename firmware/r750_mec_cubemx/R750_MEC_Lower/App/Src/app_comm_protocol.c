@@ -198,6 +198,19 @@ static AppCommFeedResult AppCommProtocol_ParseLine(
     command->type = APP_COMM_COMMAND_ESTOP;
   } else if (AppCommProtocol_TokenEquals(&tokens[0], "STATUS") && token_count == 1U) {
     command->type = APP_COMM_COMMAND_STATUS;
+  } else if (AppCommProtocol_TokenEquals(&tokens[0], "CAPTURE") &&
+             token_count == 2U) {
+    if (AppCommProtocol_TokenEquals(&tokens[1], "START")) {
+      command->type = APP_COMM_COMMAND_CAPTURE_START;
+    } else if (AppCommProtocol_TokenEquals(&tokens[1], "STOP")) {
+      command->type = APP_COMM_COMMAND_CAPTURE_STOP;
+    } else if (AppCommProtocol_TokenEquals(&tokens[1], "EXPORT")) {
+      command->type = APP_COMM_COMMAND_CAPTURE_EXPORT;
+    } else if (AppCommProtocol_TokenEquals(&tokens[1], "STATUS")) {
+      command->type = APP_COMM_COMMAND_CAPTURE_STATUS;
+    } else {
+      return AppCommProtocol_RejectSyntax(protocol);
+    }
   } else {
     return AppCommProtocol_RejectSyntax(protocol);
   }

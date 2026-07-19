@@ -12,8 +12,8 @@
  * 模块以字节流为输入，按换行符组帧，再把来自信任边界之外的文本转换成定长内部命令。
  * 解析过程会检查可打印字符、字段个数、整数溢出、PWM 范围和 32 位回绕序号。解析成功
  * 只表示语法与序号候选有效；ARM、PWM、STOP 必须同时通过实时运动许可并成功入队后
- * 再提交序号，从而允许许可关闭或队满时使用原序号重试。ESTOP 与 STATUS 不参与
- * 有序运动命令序列。
+ * 再提交序号，从而允许许可关闭或队满时使用原序号重试。ESTOP、STATUS 与 CAPTURE
+ * 诊断命令不参与有序运动命令序列。
  */
 
 #ifdef __cplusplus
@@ -27,7 +27,11 @@ typedef enum {
   APP_COMM_COMMAND_PWM,
   APP_COMM_COMMAND_STOP,
   APP_COMM_COMMAND_ESTOP,
-  APP_COMM_COMMAND_STATUS
+  APP_COMM_COMMAND_STATUS,
+  APP_COMM_COMMAND_CAPTURE_START,
+  APP_COMM_COMMAND_CAPTURE_STOP,
+  APP_COMM_COMMAND_CAPTURE_EXPORT,
+  APP_COMM_COMMAND_CAPTURE_STATUS
 } AppCommCommandType;
 
 /*

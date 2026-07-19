@@ -148,6 +148,18 @@ SECTIONS
     . = ALIGN(4);
   } >FLASH
 
+  /*
+   * G2 高速电机采集缓冲只由 CPU 访问，不参与 DMA。放入独立 NOLOAD CCMRAM 段，避免
+   * 挤占 FreeRTOS 堆所在的主 SRAM，也不为运行时覆盖的数据生成无意义的 Flash 初值。
+   */
+  .motor_capture (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.motor_capture)
+    *(.motor_capture*)
+    . = ALIGN(4);
+  } >CCMRAM
+
   _siccmram = LOADADDR(.ccmram);
 
   /* CCM-RAM section

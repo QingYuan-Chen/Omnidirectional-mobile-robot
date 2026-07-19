@@ -8,6 +8,7 @@
 #include "app_encoder_accumulator.h"
 #include "app_imu.h"
 #include "app_motion_gate.h"
+#include "app_motor_capture.h"
 #include "app_motor_open_loop.h"
 #include "app_safety_policy.h"
 #include "app_telemetry.h"
@@ -39,6 +40,7 @@
 #define APP_EVENT_CRITICAL_HEARTBEATS \
   (APP_EVENT_CONTROL_HEARTBEAT | APP_EVENT_COMM_HEARTBEAT | APP_EVENT_IMU_HEARTBEAT)
 #define APP_IMU_THREAD_FLAG_DATA_READY (1UL << 0U)
+#define APP_CAPTURE_EVENT_QUEUE_DEPTH (4U)
 
 #define APP_CONTROL_STACK_BYTES (1536U)
 #define APP_SAFETY_STACK_BYTES  (1024U)
@@ -63,6 +65,12 @@ _Static_assert(
 static osEventFlagsId_t runtime_events;
 static osMessageQueueId_t motor_command_queue;
 static osThreadId_t task_handles[APP_TASK_COUNT];
+/*
+ * CCMRAM 不能被 DMA 访问，但记录与导出都由 CPU 逐样本复制，适合保存大容量高速缓冲。
+ * 独立 NOLOAD 段不会占用主 SRAM 或 Flash；AppTasks_Create 会显式初始化全部控制字段。
+ */
+static AppMotorCapture motor_capture
+  __attribute__((section(".motor_capture"), aligned(4)));
 /*
  * runtime_snapshot 的常规数据按字段组划分单一写入者，安全状态和 motion_gate 是经过
  * 明确定义的多写入者例外。短临界区只用于内存复制或最终失败标志更新，禁止在
@@ -97,6 +105,64 @@ static void AppTasks_FillTelemetryInput(
   const AppRuntimeSnapshot *snapshot,
   uint32_t now_ms,
   AppTelemetryInput *input);
+static bool AppTasks_IsMotorStoppedForCapture(
+  const AppRuntimeSnapshot *snapshot);
+
+typedef enum {
+  APP_CAPTURE_EXPORT_IDLE = 0,
+  APP_CAPTURE_EXPORT_BEGIN,
+  APP_CAPTURE_EXPORT_SAMPLES,
+  APP_CAPTURE_EXPORT_END
+} AppCaptureExportState;
+
+typedef struct {
+  AppMotorCaptureEvent event;
+  AppMotorCaptureStatus status;
+} AppCapturePendingEvent;
+
+typedef struct {
+  AppCapturePendingEvent entries[APP_CAPTURE_EVENT_QUEUE_DEPTH];
+  uint32_t head;
+  uint32_t count;
+} AppCaptureEventQueue;
+
+static bool AppTasks_CaptureEventPush(
+  AppCaptureEventQueue *queue,
+  AppMotorCaptureEvent event,
+  const AppMotorCaptureStatus *status)
+{
+  if (queue == NULL || status == NULL ||
+      queue->count >= APP_CAPTURE_EVENT_QUEUE_DEPTH) {
+    return false;
+  }
+  const uint32_t index =
+    (queue->head + queue->count) % APP_CAPTURE_EVENT_QUEUE_DEPTH;
+  queue->entries[index].event = event;
+  queue->entries[index].status = *status;
+  queue->count++;
+  return true;
+}
+
+static bool AppTasks_CaptureEventPeek(
+  const AppCaptureEventQueue *queue,
+  AppCapturePendingEvent *event)
+{
+  if (queue == NULL || event == NULL || queue->count == 0U) {
+    return false;
+  }
+  *event = queue->entries[queue->head];
+  return true;
+}
+
+static bool AppTasks_CaptureEventPop(AppCaptureEventQueue *queue)
+{
+  if (queue == NULL || queue->count == 0U) {
+    return false;
+  }
+  queue->head = (queue->head + 1U) % APP_CAPTURE_EVENT_QUEUE_DEPTH;
+  queue->count--;
+  return true;
+}
 
 static const osThreadAttr_t task_attributes[APP_TASK_COUNT] = {
   /*
@@ -329,6 +395,16 @@ static void AppTasks_FillTelemetryInput(
   input->fault_latched = snapshot->fault_latched;
 }
 
+static bool AppTasks_IsMotorStoppedForCapture(
+  const AppRuntimeSnapshot *snapshot)
+{
+  return snapshot != NULL &&
+         snapshot->motor_open_loop.state == APP_MOTOR_OPEN_LOOP_DISARMED &&
+         snapshot->motor_open_loop.target_pwm == 0 &&
+         snapshot->motor_open_loop.applied_pwm == 0 &&
+         !snapshot->fault_latched;
+}
+
 static BspStatus AppTasks_CommitControlMotorOutput(
   AppMotorOpenLoop *controller,
   uint32_t now_ms,
@@ -435,6 +511,7 @@ BspStatus AppTasks_Create(void)
 
   memset(task_handles, 0, sizeof(task_handles));
   memset(&runtime_snapshot, 0, sizeof(runtime_snapshot));
+  AppMotorCapture_Init(&motor_capture);
   runtime_snapshot.motion_inhibited = true;
   AppMotionGate_Init(&runtime_snapshot.motion_gate);
 
@@ -623,6 +700,48 @@ static void AppTasks_Control(void *argument)
       AppTasks_FailCurrentThread();
     }
 
+    /*
+     * 高速记录发生在电机输出已经提交之后、RecordComplete 之前，因此样本中的目标/实际
+     * PWM 与本周期硬件动作一致，记录开销也会计入控制任务 WCET。通信任务只在短临界区
+     * 开始、停止或复制已完成样本，不能与这里的单生产者写入交叉。
+     */
+    AppMotorCaptureInput capture_input = {
+      .tick_sequence = tick.tick_sequence,
+      .irq_timestamp_cycles = tick.irq_timestamp_cycles,
+      .wake_latency_cycles =
+        control_timing.snapshot.wake_latency_cycles,
+      .previous_wcet_cycles =
+        control_timing.snapshot.wcet_cycles,
+      .encoder_raw_ma = tick.encoder_raw[BSP_MOTOR_MA],
+      .encoder_delta_ma = encoder_delta[BSP_MOTOR_MA],
+    };
+    taskENTER_CRITICAL();
+    capture_input.target_pwm = runtime_snapshot.motor_open_loop.target_pwm;
+    capture_input.applied_pwm = runtime_snapshot.motor_open_loop.applied_pwm;
+    capture_input.battery_millivolts = runtime_snapshot.battery_millivolts;
+    capture_input.motor_state =
+      (uint8_t)runtime_snapshot.motor_open_loop.state;
+    if (runtime_snapshot.runtime_ready) {
+      capture_input.safety_flags |= APP_MOTOR_CAPTURE_FLAG_RUNTIME_READY;
+    }
+    if (runtime_snapshot.motion_inhibited) {
+      capture_input.safety_flags |= APP_MOTOR_CAPTURE_FLAG_MOTION_INHIBITED;
+    }
+    if (runtime_snapshot.fault_latched) {
+      capture_input.safety_flags |= APP_MOTOR_CAPTURE_FLAG_FAULT_LATCHED;
+    }
+    if (runtime_snapshot.motion_gate.available) {
+      capture_input.safety_flags |= APP_MOTOR_CAPTURE_FLAG_MOTION_AVAILABLE;
+    }
+    if (runtime_snapshot.critical_tasks_alive) {
+      capture_input.safety_flags |=
+        APP_MOTOR_CAPTURE_FLAG_CRITICAL_TASKS_ALIVE;
+    }
+    taskEXIT_CRITICAL();
+    if (!AppMotorCapture_Record(&motor_capture, &capture_input)) {
+      AppTasks_FailCurrentThread();
+    }
+
     heartbeat_divider++;
     if (heartbeat_divider >= ROBOT_CONFIG_CONTROL_HEARTBEAT_DIVIDER) {
       heartbeat_pending = true;
@@ -718,6 +837,10 @@ static void AppTasks_Comm(void *argument)
   static AppRuntimeSnapshot telemetry_snapshot;
   static AppTelemetryInput telemetry_input;
   static uint8_t telemetry_frame[ROBOT_CONFIG_UART_TX_FRAME_MAX_LENGTH];
+  AppCaptureEventQueue capture_events;
+  memset(&capture_events, 0, sizeof(capture_events));
+  AppCaptureExportState capture_export_state = APP_CAPTURE_EXPORT_IDLE;
+  uint32_t capture_export_index = 0U;
 
   TickType_t last_wake = xTaskGetTickCount();
   for (;;) {
@@ -743,9 +866,90 @@ static void AppTasks_Comm(void *argument)
         force_telemetry = true;
       } else if (command.type == APP_COMM_COMMAND_STATUS) {
         force_telemetry = true;
+      } else if (command.type >= APP_COMM_COMMAND_CAPTURE_START &&
+                 command.type <= APP_COMM_COMMAND_CAPTURE_STATUS) {
+        AppRuntimeSnapshot command_snapshot;
+        AppMotorCaptureStatus capture_status;
+        bool command_accepted = false;
+        taskENTER_CRITICAL();
+        command_snapshot = runtime_snapshot;
+        if (command.type == APP_COMM_COMMAND_CAPTURE_START) {
+          command_accepted =
+            capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
+            AppTasks_IsMotorStoppedForCapture(&command_snapshot) &&
+            AppMotorCapture_Start(&motor_capture);
+        } else if (command.type == APP_COMM_COMMAND_CAPTURE_STOP) {
+          command_accepted =
+            capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
+            AppMotorCapture_Stop(&motor_capture);
+        } else if (command.type == APP_COMM_COMMAND_CAPTURE_EXPORT) {
+          command_accepted =
+            capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
+            AppTasks_IsMotorStoppedForCapture(&command_snapshot) &&
+            AppMotorCapture_GetStatus(&motor_capture, &capture_status) &&
+            capture_status.state == APP_MOTOR_CAPTURE_COMPLETE &&
+            capture_status.sample_count > 0U;
+          if (command_accepted) {
+            capture_export_state = APP_CAPTURE_EXPORT_BEGIN;
+            capture_export_index = 0U;
+          }
+        } else {
+          command_accepted = true;
+        }
+        if (!AppMotorCapture_GetStatus(&motor_capture, &capture_status)) {
+          taskEXIT_CRITICAL();
+          AppTasks_FailCurrentThread();
+        }
+        taskEXIT_CRITICAL();
+
+        if (command.type != APP_COMM_COMMAND_CAPTURE_EXPORT ||
+            !command_accepted) {
+          AppMotorCaptureEvent event = APP_MOTOR_CAPTURE_EVENT_STATUS;
+          if (!command_accepted) {
+            event = APP_MOTOR_CAPTURE_EVENT_REJECTED;
+            communication.capture_command_reject_count =
+              AppTasks_AddSaturated(
+                communication.capture_command_reject_count, 1U);
+          } else if (command.type == APP_COMM_COMMAND_CAPTURE_START) {
+            event = APP_MOTOR_CAPTURE_EVENT_STARTED;
+          } else if (command.type == APP_COMM_COMMAND_CAPTURE_STOP) {
+            event = APP_MOTOR_CAPTURE_EVENT_STOPPED;
+          }
+          if (!AppTasks_CaptureEventPush(
+                &capture_events, event, &capture_status)) {
+            communication.capture_event_drop_count = AppTasks_AddSaturated(
+              communication.capture_event_drop_count, 1U);
+          }
+        }
       } else {
-        (void)AppTasks_QueueMotorCommand(
-          &protocol, &command, &communication);
+        /*
+         * EXPORT 开始时已经确认 MA 完全停机；导出结束前继续拒绝普通运动命令，避免异步
+         * 批量发送期间电机重新动作。协议序号不提交，发送端可在 END 后使用原序号重试；
+         * ESTOP 仍在更早分支始终可用。
+         */
+        if (capture_export_state != APP_CAPTURE_EXPORT_IDLE) {
+          communication.capture_command_reject_count =
+            AppTasks_AddSaturated(
+              communication.capture_command_reject_count, 1U);
+          AppMotorCaptureStatus capture_status;
+          taskENTER_CRITICAL();
+          const bool status_valid = AppMotorCapture_GetStatus(
+            &motor_capture, &capture_status);
+          taskEXIT_CRITICAL();
+          if (!status_valid) {
+            AppTasks_FailCurrentThread();
+          }
+          if (!AppTasks_CaptureEventPush(
+                &capture_events,
+                APP_MOTOR_CAPTURE_EVENT_REJECTED,
+                &capture_status)) {
+            communication.capture_event_drop_count = AppTasks_AddSaturated(
+              communication.capture_event_drop_count, 1U);
+          }
+        } else {
+          (void)AppTasks_QueueMotorCommand(
+            &protocol, &command, &communication);
+        }
       }
     }
 
@@ -803,6 +1007,105 @@ static void AppTasks_Comm(void *argument)
       } else {
         communication.telemetry_enqueued_count = AppTasks_AddSaturated(
           communication.telemetry_enqueued_count, 1U);
+      }
+    }
+
+    /*
+     * 每个通信周期最多追加一帧高速采集数据。先查询 UART 队列余量，队满时保持当前
+     * 索引稍后重试，不调用 WriteAsync 制造虚假 queue_full 计数。事件优先于批量样本，
+     * BEGIN/END 和样本都使用同一异步发送链，导出期间仍持续解析 ESTOP 与普通命令。
+     */
+    BspUartStats capture_uart_stats;
+    if (BspUart_GetStats(debug_uart_port, &capture_uart_stats) != BSP_OK) {
+      AppTasks_FailCurrentThread();
+    }
+    if (capture_uart_stats.tx_queued_frame_count <
+        ROBOT_CONFIG_UART_TX_QUEUE_DEPTH) {
+      uint16_t capture_frame_length = 0U;
+      bool capture_frame_ready = false;
+      bool capture_frame_is_event = false;
+      AppCapturePendingEvent pending_event;
+
+      if (AppTasks_CaptureEventPeek(&capture_events, &pending_event)) {
+        capture_frame_ready = AppMotorCapture_FormatEvent(
+          pending_event.event,
+          &pending_event.status,
+          telemetry_frame,
+          (uint16_t)sizeof(telemetry_frame),
+          &capture_frame_length);
+        capture_frame_is_event = true;
+      } else if (capture_export_state != APP_CAPTURE_EXPORT_IDLE) {
+        AppMotorCaptureStatus capture_status;
+        taskENTER_CRITICAL();
+        const bool status_valid = AppMotorCapture_GetStatus(
+          &motor_capture, &capture_status);
+        taskEXIT_CRITICAL();
+        if (!status_valid ||
+            capture_status.state != APP_MOTOR_CAPTURE_COMPLETE) {
+          AppTasks_FailCurrentThread();
+        }
+
+        if (capture_export_state == APP_CAPTURE_EXPORT_BEGIN) {
+          capture_frame_ready = AppMotorCapture_FormatEvent(
+            APP_MOTOR_CAPTURE_EVENT_BEGIN,
+            &capture_status,
+            telemetry_frame,
+            (uint16_t)sizeof(telemetry_frame),
+            &capture_frame_length);
+        } else if (capture_export_state == APP_CAPTURE_EXPORT_SAMPLES &&
+                   capture_export_index < capture_status.sample_count) {
+          AppMotorCaptureSample sample;
+          taskENTER_CRITICAL();
+          const bool sample_valid = AppMotorCapture_GetSample(
+            &motor_capture, capture_export_index, &sample);
+          taskEXIT_CRITICAL();
+          if (!sample_valid) {
+            AppTasks_FailCurrentThread();
+          }
+          capture_frame_ready = AppMotorCapture_FormatSample(
+            capture_export_index,
+            &sample,
+            telemetry_frame,
+            (uint16_t)sizeof(telemetry_frame),
+            &capture_frame_length);
+        } else {
+          capture_export_state = APP_CAPTURE_EXPORT_END;
+          capture_frame_ready = AppMotorCapture_FormatEvent(
+            APP_MOTOR_CAPTURE_EVENT_END,
+            &capture_status,
+            telemetry_frame,
+            (uint16_t)sizeof(telemetry_frame),
+            &capture_frame_length);
+        }
+      }
+
+      if (!capture_frame_ready &&
+          (capture_frame_is_event ||
+           capture_export_state != APP_CAPTURE_EXPORT_IDLE)) {
+        AppTasks_FailCurrentThread();
+      }
+      if (capture_frame_ready) {
+        const BspStatus capture_send_status = BspUart_WriteAsync(
+          debug_uart_port, telemetry_frame, capture_frame_length);
+        if (capture_send_status == BSP_OK) {
+          if (capture_frame_is_event) {
+            if (!AppTasks_CaptureEventPop(&capture_events)) {
+              AppTasks_FailCurrentThread();
+            }
+          } else if (capture_export_state == APP_CAPTURE_EXPORT_BEGIN) {
+            capture_export_state = APP_CAPTURE_EXPORT_SAMPLES;
+          } else if (capture_export_state == APP_CAPTURE_EXPORT_SAMPLES) {
+            capture_export_index++;
+          } else {
+            capture_export_state = APP_CAPTURE_EXPORT_IDLE;
+            communication.capture_export_count = AppTasks_AddSaturated(
+              communication.capture_export_count, 1U);
+          }
+        } else if (capture_send_status != BSP_BUSY) {
+          communication.capture_export_error_count = AppTasks_AddSaturated(
+            communication.capture_export_error_count, 1U);
+          capture_export_state = APP_CAPTURE_EXPORT_IDLE;
+        }
       }
     }
 

@@ -53,6 +53,8 @@ if (Test-Path -LiteralPath $captureDirectory) {
 
 $rawPath = Join-Path $captureDirectory 'raw_uart.log'
 $telemetryPath = Join-Path $captureDirectory 'telemetry.csv'
+$motorCapturePath = Join-Path $captureDirectory 'motor_capture.csv'
+$motorCaptureEventsPath = Join-Path $captureDirectory 'motor_capture_events.csv'
 $commandsPath = Join-Path $captureDirectory 'commands.csv'
 $metadataPath = Join-Path $captureDirectory 'metadata.json'
 $utf8WithoutBom = [Text.UTF8Encoding]::new($false)
@@ -72,6 +74,8 @@ $serial.Encoding = [Text.Encoding]::ASCII
 
 $rawStream = $null
 $telemetryWriter = $null
+$motorCaptureWriter = $null
+$motorCaptureEventsWriter = $null
 $commandsWriter = $null
 $stopwatch = [Diagnostics.Stopwatch]::new()
 $pendingText = [Text.StringBuilder]::new()
@@ -83,6 +87,9 @@ $rawByteCount = [uint64]0
 $completeLineCount = [uint64]0
 $telemetryRowCount = [uint64]0
 $telemetryParseErrorCount = [uint64]0
+$motorCaptureRowCount = [uint64]0
+$motorCaptureEventCount = [uint64]0
+$motorCaptureParseErrorCount = [uint64]0
 $nonTelemetryLineCount = [uint64]0
 $commandSentCount = [uint64]0
 $nextCommandIndex = 0
@@ -95,10 +102,22 @@ try {
         [IO.FileAccess]::Write,
         [IO.FileShare]::Read)
     $telemetryWriter = [IO.StreamWriter]::new($telemetryPath, $false, $utf8WithoutBom)
+    $motorCaptureWriter = [IO.StreamWriter]::new(
+        $motorCapturePath, $false, $utf8WithoutBom)
+    $motorCaptureEventsWriter = [IO.StreamWriter]::new(
+        $motorCaptureEventsPath, $false, $utf8WithoutBom)
     $commandsWriter = [IO.StreamWriter]::new($commandsPath, $false, $utf8WithoutBom)
 
     $telemetryColumns = @('capture_elapsed_ms', 'host_received_utc') + @(Get-AppTelemetryColumnNames)
     $telemetryWriter.WriteLine((ConvertTo-CaptureCsvLine -Values $telemetryColumns))
+    $motorCaptureColumns =
+        @('capture_elapsed_ms', 'host_received_utc') + @(Get-MotorCaptureColumnNames)
+    $motorCaptureWriter.WriteLine(
+        (ConvertTo-CaptureCsvLine -Values $motorCaptureColumns))
+    $motorCaptureEventColumns =
+        @('capture_elapsed_ms', 'host_received_utc') + @(Get-MotorCaptureEventColumnNames)
+    $motorCaptureEventsWriter.WriteLine(
+        (ConvertTo-CaptureCsvLine -Values $motorCaptureEventColumns))
     $commandsWriter.WriteLine((ConvertTo-CaptureCsvLine -Values @(
         'planned_elapsed_ms',
         'actual_elapsed_ms',
@@ -169,24 +188,61 @@ try {
             $line = $pendingSnapshot.Substring(0, $lineEnd).TrimEnd([char]13)
             [void]$pendingText.Remove(0, $lineEnd + 1)
             $completeLineCount++
-            if (-not $line.StartsWith('T,', [StringComparison]::Ordinal)) {
-                $nonTelemetryLineCount++
+            if ($line.StartsWith('T,', [StringComparison]::Ordinal)) {
+                try {
+                    $telemetry = ConvertFrom-AppTelemetryLine -Line $line
+                    $rowValues = @(
+                        [uint64]$stopwatch.ElapsedMilliseconds,
+                        [DateTimeOffset]::UtcNow.ToString('O')
+                    )
+                    foreach ($column in (Get-AppTelemetryColumnNames)) {
+                        $rowValues += $telemetry.$column
+                    }
+                    $telemetryWriter.WriteLine((ConvertTo-CaptureCsvLine -Values $rowValues))
+                    $telemetryRowCount++
+                } catch {
+                    $telemetryParseErrorCount++
+                }
                 continue
             }
-
-            try {
-                $telemetry = ConvertFrom-AppTelemetryLine -Line $line
-                $rowValues = @(
-                    [uint64]$stopwatch.ElapsedMilliseconds,
-                    [DateTimeOffset]::UtcNow.ToString('O')
-                )
-                foreach ($column in (Get-AppTelemetryColumnNames)) {
-                    $rowValues += $telemetry.$column
+            if ($line.StartsWith('MC,', [StringComparison]::Ordinal)) {
+                try {
+                    $sample = ConvertFrom-MotorCaptureSampleLine -Line $line
+                    $rowValues = @(
+                        [uint64]$stopwatch.ElapsedMilliseconds,
+                        [DateTimeOffset]::UtcNow.ToString('O')
+                    )
+                    foreach ($column in (Get-MotorCaptureColumnNames)) {
+                        $rowValues += $sample.$column
+                    }
+                    $motorCaptureWriter.WriteLine(
+                        (ConvertTo-CaptureCsvLine -Values $rowValues))
+                    $motorCaptureRowCount++
+                } catch {
+                    $motorCaptureParseErrorCount++
                 }
-                $telemetryWriter.WriteLine((ConvertTo-CaptureCsvLine -Values $rowValues))
-                $telemetryRowCount++
-            } catch {
-                $telemetryParseErrorCount++
+                continue
+            }
+            if ($line.StartsWith('MCAP,', [StringComparison]::Ordinal)) {
+                try {
+                    $event = ConvertFrom-MotorCaptureEventLine -Line $line
+                    $rowValues = @(
+                        [uint64]$stopwatch.ElapsedMilliseconds,
+                        [DateTimeOffset]::UtcNow.ToString('O')
+                    )
+                    foreach ($column in (Get-MotorCaptureEventColumnNames)) {
+                        $rowValues += $event.$column
+                    }
+                    $motorCaptureEventsWriter.WriteLine(
+                        (ConvertTo-CaptureCsvLine -Values $rowValues))
+                    $motorCaptureEventCount++
+                } catch {
+                    $motorCaptureParseErrorCount++
+                }
+                continue
+            }
+            if (-not [string]::IsNullOrEmpty($line)) {
+                $nonTelemetryLineCount++
             }
         }
     }
@@ -210,13 +266,21 @@ try {
         $telemetryWriter.Flush()
         $telemetryWriter.Dispose()
     }
+    if ($null -ne $motorCaptureWriter) {
+        $motorCaptureWriter.Flush()
+        $motorCaptureWriter.Dispose()
+    }
+    if ($null -ne $motorCaptureEventsWriter) {
+        $motorCaptureEventsWriter.Flush()
+        $motorCaptureEventsWriter.Dispose()
+    }
     if ($null -ne $commandsWriter) {
         $commandsWriter.Flush()
         $commandsWriter.Dispose()
     }
 
     $metadata = [ordered]@{
-        schema_version = 1
+        schema_version = 2
         tool = 'tools/capture_serial.ps1'
         tool_sha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
         library_sha256 = (Get-FileHash `
@@ -254,6 +318,9 @@ try {
             complete_lines = $completeLineCount
             telemetry_rows = $telemetryRowCount
             telemetry_parse_errors = $telemetryParseErrorCount
+            motor_capture_rows = $motorCaptureRowCount
+            motor_capture_events = $motorCaptureEventCount
+            motor_capture_parse_errors = $motorCaptureParseErrorCount
             non_telemetry_lines = $nonTelemetryLineCount
             commands_scheduled = $schedule.Count
             commands_sent = $commandSentCount
@@ -262,6 +329,8 @@ try {
         artifacts = [ordered]@{
             raw_uart_log = 'raw_uart.log'
             telemetry_csv = 'telemetry.csv'
+            motor_capture_csv = 'motor_capture.csv'
+            motor_capture_events_csv = 'motor_capture_events.csv'
             commands_csv = 'commands.csv'
             metadata_json = 'metadata.json'
         }
@@ -278,5 +347,8 @@ try {
     RawBytes = $rawByteCount
     TelemetryRows = $telemetryRowCount
     TelemetryParseErrors = $telemetryParseErrorCount
+    MotorCaptureRows = $motorCaptureRowCount
+    MotorCaptureEvents = $motorCaptureEventCount
+    MotorCaptureParseErrors = $motorCaptureParseErrorCount
     CommandsSent = $commandSentCount
 }

@@ -45,6 +45,36 @@ Assert-True ($parsed.encoder_total_3 -eq [int64]::MaxValue) '解析 int64 上界
 Assert-True ($parsed.target_pwm -eq -840 -and $parsed.applied_pwm -eq 840) '解析有符号 PWM'
 Assert-True ((Get-AppTelemetryColumnNames).Count -eq 40) 'CSV 遥测列数量固定'
 
+$validMotorCaptureLine = 'MC,1,7,17,1176000,27,47,65535,-32768,-840,840,11600,6,31'
+$motorCapture = ConvertFrom-MotorCaptureSampleLine -Line $validMotorCaptureLine
+Assert-True ($motorCapture.capture_index -eq 7) '解析高速采集索引'
+Assert-True ($motorCapture.encoder_raw_ma -eq 65535 -and
+             $motorCapture.encoder_delta_ma -eq -32768) '解析高速编码器边界'
+Assert-True ($motorCapture.target_pwm -eq -840 -and
+             $motorCapture.applied_pwm -eq 840) '解析高速 PWM'
+Assert-True ($motorCapture.wake_latency_cycles -eq 27 -and
+             $motorCapture.previous_wcet_cycles -eq 47) '解析完整时序字段'
+Assert-True ((Get-MotorCaptureColumnNames).Count -eq 12) '高速采集 CSV 列数量固定'
+Assert-Throws {
+    ConvertFrom-MotorCaptureSampleLine -Line ($validMotorCaptureLine + ',0')
+} '拒绝高速采集额外字段'
+Assert-Throws {
+    ConvertFrom-MotorCaptureSampleLine -Line ($validMotorCaptureLine -replace '^MC,1', 'MC,2')
+} '拒绝未知高速采集版本'
+Assert-Throws {
+    ConvertFrom-MotorCaptureSampleLine -Line ($validMotorCaptureLine -replace ',6,31$', ',7,31')
+} '拒绝未知电机状态'
+
+$motorCaptureEvent = ConvertFrom-MotorCaptureEventLine -Line 'MCAP,1,BEGIN,2,2200,2200,1'
+Assert-True ($motorCaptureEvent.event -ceq 'BEGIN' -and
+             $motorCaptureEvent.state -eq 2 -and
+             $motorCaptureEvent.sample_count -eq 2200 -and
+             $motorCaptureEvent.dropped_sample_count -eq 1) '解析高速采集事件'
+Assert-True ((Get-MotorCaptureEventColumnNames).Count -eq 5) '高速事件 CSV 列数量固定'
+Assert-Throws {
+    ConvertFrom-MotorCaptureEventLine -Line 'MCAP,1,UNKNOWN,2,0,2200,0'
+} '拒绝未知高速采集事件'
+
 Assert-Throws { ConvertFrom-AppTelemetryLine -Line ($validLine + ',0') } '拒绝额外字段'
 Assert-Throws { ConvertFrom-AppTelemetryLine -Line ($validLine -replace ',R,', ',X,') } '拒绝错误标签'
 Assert-Throws { ConvertFrom-AppTelemetryLine -Line ($validLine -replace '^T,178946', 'T,-1') } '拒绝负无符号数'

@@ -57,6 +57,13 @@
 #define ROBOT_CONFIG_CONTROL_TICK_RING_SIZE       (16U)
 
 /*
+ * G2 板内电机高速采集容量。
+ * 每个样本固定 28 B，2200 个样本在候选 1 kHz 节拍下覆盖 2.2 s，占用 61600 B
+ * 静态 RAM。缓冲区满后记录器停止并报告丢弃计数，绝不覆盖本次采集的旧样本。
+ */
+#define ROBOT_CONFIG_MOTOR_CAPTURE_CAPACITY       (2200U)
+
+/*
  * IMU 采样、标定与质量管理参数。
  * 5 ms 是候选处理基础周期，不替代芯片时间戳；IMU 任务实际等待超时为其两倍，即 10 ms。
  * ODR、量程换算必须与 QMI8658A CTRL2/CTRL3

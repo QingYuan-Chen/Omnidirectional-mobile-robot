@@ -51,6 +51,10 @@ typedef struct {
   uint32_t adc_error_count;
   uint32_t motion_gate_reject_count;
   uint32_t estop_command_count;
+  uint32_t capture_command_reject_count;
+  uint32_t capture_event_drop_count;
+  uint32_t capture_export_count;
+  uint32_t capture_export_error_count;
 } AppCommRuntimeSnapshot;
 
 /*

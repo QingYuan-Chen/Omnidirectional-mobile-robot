@@ -82,8 +82,16 @@ static void TestValidCommands(void)
   assert(command.type == APP_COMM_COMMAND_STATUS);
   assert(Feed(&protocol, "ESTOP\n", &command) == APP_COMM_FEED_COMMAND);
   assert(command.type == APP_COMM_COMMAND_ESTOP);
+  assert(Feed(&protocol, "CAPTURE START\n", &command) == APP_COMM_FEED_COMMAND);
+  assert(command.type == APP_COMM_COMMAND_CAPTURE_START);
+  assert(Feed(&protocol, "CAPTURE STOP\n", &command) == APP_COMM_FEED_COMMAND);
+  assert(command.type == APP_COMM_COMMAND_CAPTURE_STOP);
+  assert(Feed(&protocol, "CAPTURE EXPORT\n", &command) == APP_COMM_FEED_COMMAND);
+  assert(command.type == APP_COMM_COMMAND_CAPTURE_EXPORT);
+  assert(Feed(&protocol, "CAPTURE STATUS\n", &command) == APP_COMM_FEED_COMMAND);
+  assert(command.type == APP_COMM_COMMAND_CAPTURE_STATUS);
   assert(AppCommProtocol_GetStats(&protocol, &stats));
-  assert(stats.accepted_command_count == 5U);
+  assert(stats.accepted_command_count == 9U);
   assert(AppCommProtocol_GetRejectedCount(&stats) == 0U);
 }
 
@@ -118,12 +126,14 @@ static void TestNumericRangeAndSyntax(void)
   assert(Feed(&protocol, "PWM 1 -841\n", &command) == APP_COMM_FEED_REJECTED);
   assert(Feed(&protocol, "arm 1\n", &command) == APP_COMM_FEED_REJECTED);
   assert(Feed(&protocol, "STATUS extra\n", &command) == APP_COMM_FEED_REJECTED);
+  assert(Feed(&protocol, "CAPTURE RESET\n", &command) == APP_COMM_FEED_REJECTED);
+  assert(Feed(&protocol, "CAPTURE START extra\n", &command) == APP_COMM_FEED_REJECTED);
   assert(Feed(&protocol, "\n", &command) == APP_COMM_FEED_REJECTED);
   assert(Feed(&protocol, "ST\rATUS\n", &command) == APP_COMM_FEED_REJECTED);
   assert(AppCommProtocol_GetStats(&protocol, &stats));
   assert(stats.numeric_error_count == 3U);
   assert(stats.range_error_count == 2U);
-  assert(stats.syntax_error_count == 4U);
+  assert(stats.syntax_error_count == 6U);
   assert(stats.accepted_command_count == 0U);
 }
 

@@ -187,6 +187,107 @@ function ConvertFrom-AppTelemetryLine {
     return [pscustomobject]$record
 }
 
+function Get-MotorCaptureColumnNames {
+    return @(
+        'capture_index',
+        'control_tick_sequence',
+        'irq_timestamp_cycles',
+        'wake_latency_cycles',
+        'previous_wcet_cycles',
+        'encoder_raw_ma',
+        'encoder_delta_ma',
+        'target_pwm',
+        'applied_pwm',
+        'battery_mv',
+        'motor_state',
+        'safety_flags'
+    )
+}
+
+function ConvertFrom-MotorCaptureSampleLine {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Line
+    )
+
+    $tokens = $Line.TrimEnd([char]13).Split(
+        [char[]]@(','),
+        [StringSplitOptions]::None)
+    if ($tokens.Count -ne 14 -or $tokens[0] -cne 'MC' -or $tokens[1] -cne '1') {
+        throw '高速电机样本必须是 14 字段的 MC,1 帧'
+    }
+
+    $u32Maximum = [uint64][uint32]::MaxValue
+    $u16Maximum = [uint64][uint16]::MaxValue
+    $record = [ordered]@{}
+    $record.capture_index =
+        ConvertTo-AppTelemetryUnsigned $tokens[2] $u32Maximum 'capture_index'
+    $record.control_tick_sequence =
+        ConvertTo-AppTelemetryUnsigned $tokens[3] $u32Maximum 'control_tick_sequence'
+    $record.irq_timestamp_cycles =
+        ConvertTo-AppTelemetryUnsigned $tokens[4] $u32Maximum 'irq_timestamp_cycles'
+    $record.wake_latency_cycles =
+        ConvertTo-AppTelemetryUnsigned $tokens[5] $u32Maximum 'wake_latency_cycles'
+    $record.previous_wcet_cycles =
+        ConvertTo-AppTelemetryUnsigned $tokens[6] $u32Maximum 'previous_wcet_cycles'
+    $record.encoder_raw_ma =
+        ConvertTo-AppTelemetryUnsigned $tokens[7] $u16Maximum 'encoder_raw_ma'
+    $record.encoder_delta_ma =
+        ConvertTo-AppTelemetrySigned $tokens[8] ([int16]::MinValue) ([int16]::MaxValue) 'encoder_delta_ma'
+    $record.target_pwm =
+        ConvertTo-AppTelemetrySigned $tokens[9] ([int16]::MinValue) ([int16]::MaxValue) 'target_pwm'
+    $record.applied_pwm =
+        ConvertTo-AppTelemetrySigned $tokens[10] ([int16]::MinValue) ([int16]::MaxValue) 'applied_pwm'
+    $record.battery_mv =
+        ConvertTo-AppTelemetryUnsigned $tokens[11] $u16Maximum 'battery_mv'
+    $record.motor_state =
+        ConvertTo-AppTelemetryUnsigned $tokens[12] 6 'motor_state'
+    $record.safety_flags =
+        ConvertTo-AppTelemetryUnsigned $tokens[13] 31 'safety_flags'
+    return [pscustomobject]$record
+}
+
+function Get-MotorCaptureEventColumnNames {
+    return @(
+        'event',
+        'state',
+        'sample_count',
+        'capacity',
+        'dropped_sample_count'
+    )
+}
+
+function ConvertFrom-MotorCaptureEventLine {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Line
+    )
+
+    $tokens = $Line.TrimEnd([char]13).Split(
+        [char[]]@(','),
+        [StringSplitOptions]::None)
+    if ($tokens.Count -ne 7 -or $tokens[0] -cne 'MCAP' -or $tokens[1] -cne '1') {
+        throw '高速电机事件必须是 7 字段的 MCAP,1 帧'
+    }
+    $allowedEvents = @('STATUS', 'STARTED', 'STOPPED', 'BEGIN', 'END', 'REJECTED')
+    if ($tokens[2] -cnotin $allowedEvents) {
+        throw "未知高速电机事件：$($tokens[2])"
+    }
+
+    $u32Maximum = [uint64][uint32]::MaxValue
+    return [pscustomobject][ordered]@{
+        event = $tokens[2]
+        state =
+            ConvertTo-AppTelemetryUnsigned $tokens[3] 2 'capture_state'
+        sample_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[4] $u32Maximum 'sample_count'
+        capacity =
+            ConvertTo-AppTelemetryUnsigned $tokens[5] $u32Maximum 'capacity'
+        dropped_sample_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[6] $u32Maximum 'dropped_sample_count'
+    }
+}
+
 function ConvertTo-CaptureCsvField {
     param(
         [AllowNull()]
