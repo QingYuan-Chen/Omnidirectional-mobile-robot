@@ -380,3 +380,211 @@ function Measure-G2DynamicStep {
         Accepted = -not ($gates.Values -contains $false)
     }
 }
+
+function Get-G2DynamicSampleStatistics {
+    param(
+        [Parameter(Mandatory = $true)]
+        [double[]]$Values
+    )
+
+    if ($Values.Count -eq 0) {
+        throw '动态批次统计值不能为空'
+    }
+    [double]$mean = ($Values | Measure-Object -Average).Average
+    [double]$sumSquaredDeviation = 0.0
+    [double]$maximumSingleDeviationPercent = 0.0
+    foreach ($value in $Values) {
+        $sumSquaredDeviation += [Math]::Pow($value - $mean, 2)
+        if ([Math]::Abs($mean) -gt [double]::Epsilon) {
+            $deviationPercent =
+                100.0 * [Math]::Abs($value - $mean) / [Math]::Abs($mean)
+            $maximumSingleDeviationPercent = [Math]::Max(
+                $maximumSingleDeviationPercent,
+                $deviationPercent)
+        }
+    }
+    [double]$sampleStandardDeviation = if ($Values.Count -gt 1) {
+        [Math]::Sqrt($sumSquaredDeviation / ($Values.Count - 1))
+    } else {
+        0.0
+    }
+    $coefficientOfVariationPercent =
+        if ([Math]::Abs($mean) -gt [double]::Epsilon) {
+            100.0 * $sampleStandardDeviation / [Math]::Abs($mean)
+        } else {
+            $null
+        }
+
+    return [pscustomobject][ordered]@{
+        count = $Values.Count
+        mean = $mean
+        sample_standard_deviation = $sampleStandardDeviation
+        coefficient_of_variation_percent = $coefficientOfVariationPercent
+        minimum = [double](($Values | Measure-Object -Minimum).Minimum)
+        maximum = [double](($Values | Measure-Object -Maximum).Maximum)
+        maximum_single_deviation_percent = $maximumSingleDeviationPercent
+    }
+}
+
+function Measure-G2DynamicStepBatch {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Rows,
+
+        [ValidateRange(3, 5)]
+        [int]$RequiredRepeatCount = 3,
+
+        [ValidateRange(0.1, 100.0)]
+        [double]$PassCvPercent = 5.0,
+
+        [ValidateRange(0.1, 100.0)]
+        [double]$RetestCvPercent = 10.0
+    )
+
+    if ($Rows.Count -eq 0) {
+        throw '动态阶跃批次不能为空'
+    }
+    if ($RetestCvPercent -lt $PassCvPercent) {
+        throw '补测CV门槛不能小于通过门槛'
+    }
+    $requiredColumns = @(
+        'experiment_id', 'direction', 'peak_pwm', 'repetition', 'accepted',
+        'peak_window_wheel_rpm', 'signed_total_displacement_counts',
+        'motion_threshold_delay_ms', 'active_battery_minimum_mv'
+    )
+    foreach ($column in $requiredColumns) {
+        if ($Rows[0].PSObject.Properties.Name -notcontains $column) {
+            throw "动态阶跃批次缺少字段：$column"
+        }
+    }
+
+    $seenExperiments = @{}
+    $normalizedRows = [Collections.Generic.List[object]]::new()
+    foreach ($row in $Rows) {
+        $experimentId = [string]$row.experiment_id
+        $direction = [string]$row.direction
+        [int]$peakPwm = [int]$row.peak_pwm
+        [int]$repetition = [int]$row.repetition
+        if ([string]::IsNullOrWhiteSpace($experimentId) -or
+            $seenExperiments.ContainsKey($experimentId)) {
+            throw "动态阶跃批次实验ID为空或重复：$experimentId"
+        }
+        if ($direction -cne 'Positive' -and $direction -cne 'Negative') {
+            throw "动态阶跃批次方向非法：$direction"
+        }
+        if (@(240, 400, 600, 840) -notcontains $peakPwm) {
+            throw "动态阶跃批次PWM非法：$peakPwm"
+        }
+        if ($repetition -lt 1) {
+            throw "动态阶跃批次重复序号非法：$repetition"
+        }
+        $seenExperiments[$experimentId] = $true
+        $normalizedRows.Add([pscustomobject][ordered]@{
+            experiment_id = $experimentId
+            direction = $direction
+            peak_pwm = $peakPwm
+            repetition = $repetition
+            capture_directory = [string]$row.capture_directory
+            accepted = [bool]$row.accepted
+            peak_window_wheel_rpm = [double]$row.peak_window_wheel_rpm
+            signed_total_displacement_counts =
+                [double]$row.signed_total_displacement_counts
+            motion_threshold_delay_ms =
+                [double]$row.motion_threshold_delay_ms
+            active_battery_minimum_mv =
+                [uint32]$row.active_battery_minimum_mv
+        })
+    }
+
+    $groups = [Collections.Generic.List[object]]::new()
+    foreach ($peakPwm in @($normalizedRows.peak_pwm | Sort-Object -Unique)) {
+        foreach ($direction in @('Positive', 'Negative')) {
+            $groupRows = @($normalizedRows | Where-Object {
+                $_.peak_pwm -eq $peakPwm -and $_.direction -ceq $direction
+            })
+            if ($groupRows.Count -eq 0) {
+                continue
+            }
+            $peakRpm = Get-G2DynamicSampleStatistics -Values @(
+                $groupRows.peak_window_wheel_rpm)
+            $displacement = Get-G2DynamicSampleStatistics -Values @(
+                $groupRows.signed_total_displacement_counts)
+            $motionDelay = Get-G2DynamicSampleStatistics -Values @(
+                $groupRows.motion_threshold_delay_ms)
+            $allCapturesAccepted =
+                -not (@($groupRows | Where-Object { -not $_.accepted }).Count)
+            $screening = if (-not $allCapturesAccepted) {
+                'rejected_capture'
+            } elseif ($groupRows.Count -lt $RequiredRepeatCount) {
+                'insufficient_repeats'
+            } elseif (
+                [double]$peakRpm.coefficient_of_variation_percent -le
+                    $PassCvPercent) {
+                'pass'
+            } elseif (
+                [double]$peakRpm.coefficient_of_variation_percent -le
+                    $RetestCvPercent) {
+                'retest'
+            } else {
+                'block'
+            }
+            $groups.Add([pscustomobject][ordered]@{
+                direction = $direction
+                peak_pwm = $peakPwm
+                repeat_count = $groupRows.Count
+                all_captures_accepted = $allCapturesAccepted
+                peak_window_wheel_rpm = $peakRpm
+                signed_total_displacement_counts = $displacement
+                motion_threshold_delay_ms = $motionDelay
+                minimum_battery_mv = [uint32]((
+                    $groupRows |
+                        Measure-Object -Property active_battery_minimum_mv -Minimum
+                ).Minimum)
+                screening = $screening
+            })
+        }
+    }
+
+    $positiveGroups = @($groups | Where-Object direction -ceq 'Positive')
+    $negativeGroups = @($groups | Where-Object direction -ceq 'Negative')
+    $directionComparisons = [Collections.Generic.List[object]]::new()
+    foreach ($positive in $positiveGroups) {
+        $negative = @($negativeGroups | Where-Object {
+            $_.peak_pwm -eq $positive.peak_pwm
+        })
+        if ($negative.Count -ne 1) {
+            continue
+        }
+        [double]$positiveMean = $positive.peak_window_wheel_rpm.mean
+        [double]$negativeMean = $negative[0].peak_window_wheel_rpm.mean
+        [double]$pairMean = ($positiveMean + $negativeMean) / 2.0
+        $directionComparisons.Add([pscustomobject][ordered]@{
+            peak_pwm = $positive.peak_pwm
+            positive_mean_wheel_rpm = $positiveMean
+            negative_mean_wheel_rpm = $negativeMean
+            positive_minus_negative_rpm = $positiveMean - $negativeMean
+            difference_percent_of_pair_mean =
+                if ([Math]::Abs($pairMean) -gt [double]::Epsilon) {
+                    100.0 * ($positiveMean - $negativeMean) / $pairMean
+                } else {
+                    $null
+                }
+        })
+    }
+
+    $captureEvidenceAccepted =
+        -not (@($normalizedRows | Where-Object { -not $_.accepted }).Count)
+    $repeatabilityAccepted =
+        $groups.Count -gt 0 -and
+        -not (@($groups | Where-Object { $_.screening -cne 'pass' }).Count)
+    return [pscustomobject][ordered]@{
+        capture_count = $normalizedRows.Count
+        capture_evidence_accepted = $captureEvidenceAccepted
+        repeatability_accepted = $repeatabilityAccepted
+        groups = $groups.ToArray()
+        direction_comparisons = $directionComparisons.ToArray()
+        model_ready = $false
+        model_readiness_reason =
+            '中档动态批次只筛选采集质量和重复性；完整多档辨识集、独立验证集与残差评估尚未完成。'
+    }
+}

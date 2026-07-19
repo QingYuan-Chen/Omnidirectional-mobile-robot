@@ -112,6 +112,132 @@ try {
                  -not $batchManifest.analysis.model_ready_after_batch) `
         '批次遇到拒绝立即停止且不宣称模型就绪'
 
+    $batchMeasurement = Measure-G2DynamicStepBatch -Rows @(
+        [pscustomobject]@{
+            experiment_id = 'pos1'; direction = 'Positive'; peak_pwm = 400
+            repetition = 1; capture_directory = 'a'; accepted = $true
+            peak_window_wheel_rpm = 19.0
+            signed_total_displacement_counts = 34000
+            motion_threshold_delay_ms = 300
+            active_battery_minimum_mv = 11600
+        },
+        [pscustomobject]@{
+            experiment_id = 'pos2'; direction = 'Positive'; peak_pwm = 400
+            repetition = 2; capture_directory = 'b'; accepted = $true
+            peak_window_wheel_rpm = 21.0
+            signed_total_displacement_counts = 37000
+            motion_threshold_delay_ms = 280
+            active_battery_minimum_mv = 11590
+        },
+        [pscustomobject]@{
+            experiment_id = 'pos3'; direction = 'Positive'; peak_pwm = 400
+            repetition = 3; capture_directory = 'c'; accepted = $true
+            peak_window_wheel_rpm = 21.0
+            signed_total_displacement_counts = 37100
+            motion_threshold_delay_ms = 285
+            active_battery_minimum_mv = 11595
+        },
+        [pscustomobject]@{
+            experiment_id = 'neg1'; direction = 'Negative'; peak_pwm = 400
+            repetition = 1; capture_directory = 'd'; accepted = $true
+            peak_window_wheel_rpm = 17.5
+            signed_total_displacement_counts = 31000
+            motion_threshold_delay_ms = 315
+            active_battery_minimum_mv = 11600
+        },
+        [pscustomobject]@{
+            experiment_id = 'neg2'; direction = 'Negative'; peak_pwm = 400
+            repetition = 2; capture_directory = 'e'; accepted = $true
+            peak_window_wheel_rpm = 18.0
+            signed_total_displacement_counts = 32000
+            motion_threshold_delay_ms = 300
+            active_battery_minimum_mv = 11590
+        },
+        [pscustomobject]@{
+            experiment_id = 'neg3'; direction = 'Negative'; peak_pwm = 400
+            repetition = 3; capture_directory = 'f'; accepted = $true
+            peak_window_wheel_rpm = 18.5
+            signed_total_displacement_counts = 33000
+            motion_threshold_delay_ms = 290
+            active_battery_minimum_mv = 11595
+        })
+    $positiveBatchGroup = @($batchMeasurement.groups | Where-Object {
+        $_.direction -ceq 'Positive'
+    })[0]
+    $negativeBatchGroup = @($batchMeasurement.groups | Where-Object {
+        $_.direction -ceq 'Negative'
+    })[0]
+    Assert-True ($batchMeasurement.capture_evidence_accepted -and
+                 -not $batchMeasurement.repeatability_accepted) `
+        '区分批次采集证据接受与重复性未通过'
+    Assert-True ($positiveBatchGroup.screening -ceq 'retest' -and
+                 $negativeBatchGroup.screening -ceq 'pass') `
+        '按5%和10% CV门槛区分通过与补测'
+    Assert-True (-not $batchMeasurement.model_ready -and
+                 $batchMeasurement.direction_comparisons.Count -eq 1) `
+        '批次汇总比较双向均值但不宣称模型就绪'
+
+    $batchCaptureRoot = Join-Path $temporaryDirectory 'batch-captures'
+    [void][IO.Directory]::CreateDirectory($batchCaptureRoot)
+    $positiveRpms = @(19.0, 21.0, 21.0)
+    $negativeRpms = @(17.5, 18.0, 18.5)
+    $batchCaptureDirectories = [Collections.Generic.List[string]]::new()
+    foreach ($batchRow in $batchRows) {
+        $batchCaptureDirectory =
+            Join-Path $batchCaptureRoot $batchRow.experiment_id
+        [void][IO.Directory]::CreateDirectory($batchCaptureDirectory)
+        $repeatIndex = [int]$batchRow.repetition - 1
+        $rpm = if ($batchRow.direction -ceq 'Positive') {
+            $positiveRpms[$repeatIndex]
+        } else {
+            $negativeRpms[$repeatIndex]
+        }
+        $syntheticBatchSummaryPath = Join-Path $batchCaptureDirectory `
+            'g2_dynamic_step_summary.json'
+        [IO.File]::WriteAllText(
+            $syntheticBatchSummaryPath,
+            ([ordered]@{
+                experiment_id = $batchRow.experiment_id
+                accepted = $true
+                dynamics = [ordered]@{
+                    direction = $batchRow.direction
+                    peak_pwm = [int]$batchRow.peak_pwm
+                    peak_window_wheel_rpm = $rpm
+                    signed_total_displacement_counts =
+                        if ($batchRow.direction -ceq 'Positive') {
+                            36000
+                        } else {
+                            32000
+                        }
+                    motion_threshold_delay_ms =
+                        if ($batchRow.direction -ceq 'Positive') {
+                            290
+                        } else {
+                            310
+                        }
+                    active_battery_minimum_mv = 11590
+                }
+            } | ConvertTo-Json -Depth 5),
+            [Text.UTF8Encoding]::new($false))
+        $batchCaptureDirectories.Add($batchCaptureDirectory)
+    }
+    $batchSummaryOutput = Join-Path $temporaryDirectory 'batch-summary'
+    $batchSummaryScript = Join-Path $PSScriptRoot `
+        '..\tools\summarize_g2_dynamic_step_batch.ps1'
+    $batchSummary = & $batchSummaryScript `
+        -BatchDirectory $batch.BatchDirectory `
+        -CaptureDirectories $batchCaptureDirectories.ToArray() `
+        -OutputDirectory $batchSummaryOutput
+    $batchSummaryJson =
+        Get-Content -LiteralPath $batchSummary.SummaryPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+    Assert-True ($batchSummary.CaptureCount -eq 6 -and
+                 $batchSummary.CaptureEvidenceAccepted) `
+        '端到端汇总六个批次采集摘要'
+    Assert-True (-not $batchSummary.RepeatabilityAccepted -and
+                 -not $batchSummaryJson.measurement.model_ready) `
+        '端到端批次汇总保留补测结论和模型未就绪'
+
     $captureDirectory = Join-Path $temporaryDirectory 'capture'
     [void][IO.Directory]::CreateDirectory($captureDirectory)
     $sampleCount = 2000
