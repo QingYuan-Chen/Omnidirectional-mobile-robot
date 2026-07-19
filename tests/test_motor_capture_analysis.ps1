@@ -138,10 +138,34 @@ try {
     ) | Export-Csv -LiteralPath (
         Join-Path $captureDirectory 'motor_capture_events.csv') `
         -NoTypeInformation -Encoding utf8
-    @(
-        [pscustomobject]@{ missed_period_count = 0; deadline_miss_count = 0 },
-        [pscustomobject]@{ missed_period_count = 0; deadline_miss_count = 0 }
-    ) | Export-Csv -LiteralPath (Join-Path $captureDirectory 'telemetry.csv') `
+    $telemetryRows = @(
+        [pscustomobject]@{
+            missed_period_count = 0
+            deadline_miss_count = 0
+            uart_error_count = 0
+            uart_rx_overflow_count = 0
+            uart_tx_fault_count = 0
+            command_reject_count = 0
+            command_queue_drop_count = 0
+            motion_gate_reject_count = 0
+            invalidated_motor_command_count = 0
+            adc_error_count = 0
+        },
+        [pscustomobject]@{
+            missed_period_count = 0
+            deadline_miss_count = 0
+            uart_error_count = 0
+            uart_rx_overflow_count = 0
+            uart_tx_fault_count = 0
+            command_reject_count = 0
+            command_queue_drop_count = 0
+            motion_gate_reject_count = 0
+            invalidated_motor_command_count = 0
+            adc_error_count = 0
+        }
+    )
+    $telemetryRows |
+        Export-Csv -LiteralPath (Join-Path $captureDirectory 'telemetry.csv') `
         -NoTypeInformation -Encoding utf8
     [IO.File]::WriteAllText(
         (Join-Path $captureDirectory 'metadata.json'),
@@ -164,6 +188,20 @@ try {
     Assert-True ($analysis.Accepted -and $analysisSummary.accepted) '端到端分析接受完整合成采集'
     Assert-True ($analysisSummary.timing.sample_count -eq 1000 -and
                  $analysisSummary.timing.control_tick_gap_count -eq 0) '端到端分析保持样本连续'
+
+    $faultAnalysisDirectory = Join-Path $temporaryDirectory 'fault_analysis'
+    $telemetryRows[1].uart_tx_fault_count = 1
+    $telemetryRows |
+        Export-Csv -LiteralPath (Join-Path $captureDirectory 'telemetry.csv') `
+        -NoTypeInformation -Encoding utf8
+    $faultAnalysis = & (Join-Path $PSScriptRoot '..\tools\analyze_motor_capture.ps1') `
+        -CaptureDirectory $captureDirectory `
+        -OutputDirectory $faultAnalysisDirectory
+    $faultSummary =
+        Get-Content -LiteralPath $faultAnalysis.SummaryPath -Raw | ConvertFrom-Json
+    Assert-True (-not $faultAnalysis.Accepted -and
+                 -not $faultSummary.gates.zero_reported_uart_tx_fault_count_increment) `
+        'UART发送故障增量必须拒绝高速采集'
 } finally {
     if (Test-Path -LiteralPath $temporaryDirectory -PathType Container) {
         Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force

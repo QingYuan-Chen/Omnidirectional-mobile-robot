@@ -55,19 +55,29 @@ if ([uint32]$begin.sample_count -ne $samples.Count -or
 }
 
 $measurement = Measure-MotorCaptureRows -Rows $samples
-$missedPeriodIncrement = [uint64]0
-$deadlineMissIncrement = [uint64]0
-if ($telemetry.Count -ge 2) {
-    [uint64]$missedMinimum =
-        [uint64](($telemetry | Measure-Object -Property missed_period_count -Minimum).Minimum)
-    [uint64]$missedMaximum =
-        [uint64](($telemetry | Measure-Object -Property missed_period_count -Maximum).Maximum)
-    [uint64]$deadlineMinimum =
-        [uint64](($telemetry | Measure-Object -Property deadline_miss_count -Minimum).Minimum)
-    [uint64]$deadlineMaximum =
-        [uint64](($telemetry | Measure-Object -Property deadline_miss_count -Maximum).Maximum)
-    $missedPeriodIncrement = $missedMaximum - $missedMinimum
-    $deadlineMissIncrement = $deadlineMaximum - $deadlineMinimum
+$telemetryCounterFields = @(
+    'missed_period_count',
+    'deadline_miss_count',
+    'uart_error_count',
+    'uart_rx_overflow_count',
+    'uart_tx_fault_count',
+    'command_reject_count',
+    'command_queue_drop_count',
+    'motion_gate_reject_count',
+    'invalidated_motor_command_count',
+    'adc_error_count'
+)
+$telemetryCounterIncrements = [ordered]@{}
+foreach ($field in $telemetryCounterFields) {
+    if ($telemetry.Count -lt 2 -or
+        $telemetry[0].PSObject.Properties.Name -notcontains $field) {
+        throw "遥测缺少高速采集安全计数：$field"
+    }
+    [uint64]$minimum =
+        [uint64](($telemetry | Measure-Object -Property $field -Minimum).Minimum)
+    [uint64]$maximum =
+        [uint64](($telemetry | Measure-Object -Property $field -Maximum).Maximum)
+    $telemetryCounterIncrements[$field] = $maximum - $minimum
 }
 
 $gates = [ordered]@{
@@ -75,8 +85,10 @@ $gates = [ordered]@{
     no_capture_drop = ([uint32]$begin.dropped_sample_count -eq 0)
     contiguous_capture_index = ($measurement.Summary.capture_index_gap_count -eq 0)
     contiguous_control_tick = ($measurement.Summary.control_tick_gap_count -eq 0)
-    zero_reported_missed_period_increment = ($missedPeriodIncrement -eq 0)
-    zero_reported_deadline_miss_increment = ($deadlineMissIncrement -eq 0)
+    zero_reported_missed_period_increment =
+        ($telemetryCounterIncrements.missed_period_count -eq 0)
+    zero_reported_deadline_miss_increment =
+        ($telemetryCounterIncrements.deadline_miss_count -eq 0)
     p99_irq_jitter_at_most_5_percent =
         ($measurement.Summary.p99_irq_jitter_cycles -le 8400)
     p99_wake_latency_at_most_5_percent =
@@ -88,17 +100,20 @@ $gates = [ordered]@{
     maximum_wcet_at_most_25_percent =
         ($measurement.Summary.maximum_previous_wcet_cycles -le 42000)
 }
+foreach ($field in $telemetryCounterFields | Select-Object -Skip 2) {
+    $gates["zero_reported_${field}_increment"] =
+        ($telemetryCounterIncrements[$field] -eq 0)
+}
 $accepted = -not ($gates.Values -contains $false)
 
 $summary = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     source_capture_directory = $resolvedCapture
     source_firmware_commit = $metadata.firmware_commit
     sample_count = $samples.Count
     capacity = [uint32]$begin.capacity
     dropped_sample_count = [uint32]$begin.dropped_sample_count
-    telemetry_missed_period_increment = $missedPeriodIncrement
-    telemetry_deadline_miss_increment = $deadlineMissIncrement
+    telemetry_counter_increments = $telemetryCounterIncrements
     timing = $measurement.Summary
     gates = $gates
     accepted = $accepted

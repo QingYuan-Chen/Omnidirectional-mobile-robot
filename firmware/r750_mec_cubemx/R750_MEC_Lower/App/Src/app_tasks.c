@@ -57,6 +57,12 @@ _Static_assert(ROBOT_CONFIG_MOTOR_COMMAND_QUEUE_DEPTH > 0U,
                "motor command queue depth must be non-zero");
 _Static_assert(ROBOT_CONFIG_TELEMETRY_PERIOD_MS > 0U,
                "telemetry period must be non-zero");
+_Static_assert(ROBOT_CONFIG_UART_TX_CAPTURE_RESERVED_SLOTS > 0U,
+               "capture export must reserve at least one UART TX slot");
+_Static_assert(
+  ROBOT_CONFIG_UART_TX_CAPTURE_RESERVED_SLOTS <
+    ROBOT_CONFIG_UART_TX_QUEUE_DEPTH,
+  "capture export reservation must leave at least one export slot");
 _Static_assert(
   ROBOT_CONFIG_DEBUG_UART_PORT == BSP_UART_ROS ||
   ROBOT_CONFIG_DEBUG_UART_PORT == BSP_UART_TTL,
@@ -1011,16 +1017,18 @@ static void AppTasks_Comm(void *argument)
     }
 
     /*
-     * 每个通信周期最多追加一帧高速采集数据。先查询 UART 队列余量，队满时保持当前
-     * 索引稍后重试，不调用 WriteAsync 制造虚假 queue_full 计数。事件优先于批量样本，
-     * BEGIN/END 和样本都使用同一异步发送链，导出期间仍持续解析 ESTOP 与普通命令。
+     * 每个通信周期最多追加一帧高速采集数据。高速导出必须为下一次 50 Hz 状态遥测
+     * 预留一个槽位，否则导出可在两个通信周期之间填满队列，使随后到期的遥测调用
+     * WriteAsync 并增加 queue_full。队列达到导出上限时保持当前索引稍后重试；事件优先
+     * 于批量样本，BEGIN/END 和样本都使用同一异步发送链，期间仍解析 ESTOP 与普通命令。
      */
     BspUartStats capture_uart_stats;
     if (BspUart_GetStats(debug_uart_port, &capture_uart_stats) != BSP_OK) {
       AppTasks_FailCurrentThread();
     }
     if (capture_uart_stats.tx_queued_frame_count <
-        ROBOT_CONFIG_UART_TX_QUEUE_DEPTH) {
+        (ROBOT_CONFIG_UART_TX_QUEUE_DEPTH -
+         ROBOT_CONFIG_UART_TX_CAPTURE_RESERVED_SLOTS)) {
       uint16_t capture_frame_length = 0U;
       bool capture_frame_ready = false;
       bool capture_frame_is_event = false;

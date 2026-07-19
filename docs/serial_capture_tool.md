@@ -79,8 +79,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 ```
 
 分析器要求 `BEGIN/END`、CSV 行数和元数据闭合，检查 1 kHz 索引/tick 连续性、IRQ 抖动、
-唤醒延迟、上一周期 WCET、遥测漏周期/截止期增量及缓冲丢弃。门槛为 P99 不超过周期
-5%、最大值不超过 10%、WCET 不超过 25%，且所有丢失/截止期/缓冲丢弃为 0。
+唤醒延迟、上一周期 WCET、缓冲丢弃，以及遥测中的漏周期、截止期、UART、命令队列、
+运动门和 ADC 计数增量。门槛为 P99 不超过周期 5%、最大值不超过 10%、WCET 不超过
+25%，且全部丢失、截止期、缓冲丢弃和错误增量为 0；即使高速样本完整，只要导出期间
+`uart_tx_fault_count` 等任一错误增加，`accepted` 也必须为 `false`。
 
 ## CSV 字段与失败处理
 
