@@ -79,9 +79,9 @@ function New-G2LowSpeedValidationSchedule {
         command = "STOP $sequence"
     })
     foreach ($entry in @(
-        [pscustomobject]@{ elapsed_ms = [uint64]2750; command = 'CAPTURE STOP' },
-        [pscustomobject]@{ elapsed_ms = [uint64]3000; command = 'CAPTURE STATUS' },
-        [pscustomobject]@{ elapsed_ms = [uint64]3250; command = 'CAPTURE EXPORT' },
+        [pscustomobject]@{ elapsed_ms = [uint64]2900; command = 'CAPTURE STOP' },
+        [pscustomobject]@{ elapsed_ms = [uint64]3150; command = 'CAPTURE STATUS' },
+        [pscustomobject]@{ elapsed_ms = [uint64]3400; command = 'CAPTURE EXPORT' },
         [pscustomobject]@{ elapsed_ms = [uint64]12000; command = 'STATUS' }
     )) {
         $schedule.Add($entry)
@@ -104,9 +104,9 @@ function Test-G2LowSpeedValidationSchedule {
         0 = 'STATUS'
         500 = 'CAPTURE STATUS'
         750 = 'CAPTURE START'
-        2750 = 'CAPTURE STOP'
-        3000 = 'CAPTURE STATUS'
-        3250 = 'CAPTURE EXPORT'
+        2900 = 'CAPTURE STOP'
+        3150 = 'CAPTURE STATUS'
+        3400 = 'CAPTURE EXPORT'
         12000 = 'STATUS'
     }
     $motionTimes = @(800, 850, 1150, 1450, 1750, 2050, 2300)
@@ -165,11 +165,11 @@ function Test-G2LowSpeedValidationSchedule {
     if ($armCount -ne 1 -or $pwmCount -ne 5 -or $stopCount -ne 1) {
         throw '低速独立验证必须包含一次ARM、五次PWM和一次STOP'
     }
-    if ((2750 - 750) -gt 2200) {
+    if ((2900 - 750) -gt 2200) {
         throw '低速独立验证超过2200样本高速缓冲预算'
     }
-    if ((2750 - 2300) -lt (240 + 100)) {
-        throw '低速独立验证停车后窗口不足'
+    if ((2900 - 2300) -lt 550) {
+        throw '低速独立验证停车后记录未覆盖500 ms自动解锁和50 ms余量'
     }
     return $true
 }

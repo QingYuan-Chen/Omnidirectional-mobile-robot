@@ -40,6 +40,9 @@ Assert-True (@($schedule | Where-Object {
 Assert-True (@($schedule | Where-Object {
     $_.command -match '^STOP [0-9]+$' -and $_.elapsed_ms -eq 2300
 }).Count -eq 1) '独立验证延长平台后在2300 ms停车'
+Assert-True (@($schedule | Where-Object {
+    $_.command -ceq 'CAPTURE STOP' -and $_.elapsed_ms -eq 2900
+}).Count -eq 1) '高速记录覆盖STOP后500 ms自动解锁并保留余量'
 Assert-True (-not @($schedule | Where-Object {
     $_.command -ceq 'ESTOP'
 }).Count) '独立验证不含ESTOP'
@@ -183,8 +186,10 @@ try {
     Assert-True (
         $firstPlan.controlled_conditions.minimum_cooldown_before_plan_seconds -eq
             60 -and
-        $firstPlan.schedule.expected_full_pwm_plateau_ms -eq 1211) `
-        '子计划冻结冷却时间和延长后的满PWM平台'
+        $firstPlan.schedule.expected_full_pwm_plateau_ms -eq 1211 -and
+        $firstPlan.schedule.capture_stop_ms -eq 2900 -and
+        $firstPlan.schedule.export_ms -eq 3400) `
+        '子计划冻结冷却、满PWM平台和停车后解锁记录窗口'
     Assert-True (
         $analysisProfile.low_speed_steady_validation -and
         $analysisProfile.minimum_full_pwm_plateau_ms -eq 1200 -and
