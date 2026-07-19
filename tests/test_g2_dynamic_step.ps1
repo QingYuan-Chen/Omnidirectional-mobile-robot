@@ -238,6 +238,46 @@ try {
                  -not $batchSummaryJson.measurement.model_ready) `
         '端到端批次汇总保留补测结论和模型未就绪'
 
+    $supplementalPlanRoot = Join-Path $temporaryDirectory 'supplemental-plans'
+    $supplementalPlan = & (
+        Join-Path $PSScriptRoot '..\tools\new_g2_dynamic_step_plan.ps1') `
+        -ExperimentId pwm400_r4_pos `
+        -FirmwareCommit 1234567 `
+        -Direction Positive `
+        -PeakPwm 400 `
+        -SequenceStart 2000 `
+        -OutputRoot $supplementalPlanRoot
+    $supplementalCapture =
+        Join-Path $batchCaptureRoot 'pwm400_r4_pos'
+    [void][IO.Directory]::CreateDirectory($supplementalCapture)
+    [IO.File]::WriteAllText(
+        (Join-Path $supplementalCapture 'g2_dynamic_step_summary.json'),
+        ([ordered]@{
+            experiment_id = 'pwm400_r4_pos'
+            source_plan_directory = $supplementalPlan.ExperimentDirectory
+            accepted = $true
+            dynamics = [ordered]@{
+                direction = 'Positive'
+                peak_pwm = 400
+                peak_window_wheel_rpm = 20.5
+                signed_total_displacement_counts = 36500
+                motion_threshold_delay_ms = 290
+                active_battery_minimum_mv = 11580
+            }
+        } | ConvertTo-Json -Depth 5),
+        [Text.UTF8Encoding]::new($false))
+    $supplementalOutput = Join-Path $temporaryDirectory 'supplemental-summary'
+    $supplementalSummary = & $batchSummaryScript `
+        -BatchDirectory $batch.BatchDirectory `
+        -CaptureDirectories $batchCaptureDirectories.ToArray() `
+        -SupplementalCaptureDirectories @($supplementalCapture) `
+        -SupplementalRepetitions @(4) `
+        -OutputDirectory $supplementalOutput
+    Assert-True ($supplementalSummary.CaptureCount -eq 7 -and
+                 $supplementalSummary.RepeatabilityAccepted -and
+                 -not $supplementalSummary.ModelReady) `
+        '补测采集可绑定独立计划并重新关闭重复性门'
+
     $captureDirectory = Join-Path $temporaryDirectory 'capture'
     [void][IO.Directory]::CreateDirectory($captureDirectory)
     $sampleCount = 2000
