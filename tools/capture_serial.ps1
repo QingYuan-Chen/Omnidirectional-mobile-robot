@@ -61,6 +61,8 @@ $motorCapturePath = Join-Path $captureDirectory 'motor_capture.csv'
 $motorCaptureEventsPath = Join-Path $captureDirectory 'motor_capture_events.csv'
 $speedCapturePath = Join-Path $captureDirectory 'speed_capture.csv'
 $speedCaptureEventsPath = Join-Path $captureDirectory 'speed_capture_events.csv'
+$imuCapturePath = Join-Path $captureDirectory 'imu_capture.csv'
+$imuCaptureEventsPath = Join-Path $captureDirectory 'imu_capture_events.csv'
 $commandsPath = Join-Path $captureDirectory 'commands.csv'
 $metadataPath = Join-Path $captureDirectory 'metadata.json'
 $utf8WithoutBom = [Text.UTF8Encoding]::new($false)
@@ -88,6 +90,8 @@ $motorCaptureWriter = $null
 $motorCaptureEventsWriter = $null
 $speedCaptureWriter = $null
 $speedCaptureEventsWriter = $null
+$imuCaptureWriter = $null
+$imuCaptureEventsWriter = $null
 $commandsWriter = $null
 $stopwatch = [Diagnostics.Stopwatch]::new()
 $pendingText = [Text.StringBuilder]::new()
@@ -113,6 +117,9 @@ $motorCaptureParseErrorCount = [uint64]0
 $speedCaptureRowCount = [uint64]0
 $speedCaptureEventCount = [uint64]0
 $speedCaptureParseErrorCount = [uint64]0
+$imuCaptureRowCount = [uint64]0
+$imuCaptureEventCount = [uint64]0
+$imuCaptureParseErrorCount = [uint64]0
 $nonTelemetryLineCount = [uint64]0
 $commandSentCount = [uint64]0
 $nextCommandIndex = 0
@@ -137,6 +144,10 @@ try {
         $speedCapturePath, $false, $utf8WithoutBom)
     $speedCaptureEventsWriter = [IO.StreamWriter]::new(
         $speedCaptureEventsPath, $false, $utf8WithoutBom)
+    $imuCaptureWriter = [IO.StreamWriter]::new(
+        $imuCapturePath, $false, $utf8WithoutBom)
+    $imuCaptureEventsWriter = [IO.StreamWriter]::new(
+        $imuCaptureEventsPath, $false, $utf8WithoutBom)
     $commandsWriter = [IO.StreamWriter]::new($commandsPath, $false, $utf8WithoutBom)
 
     $telemetryColumns = @('capture_elapsed_ms', 'host_received_utc') + @(Get-AppTelemetryColumnNames)
@@ -164,6 +175,14 @@ try {
         @('capture_elapsed_ms', 'host_received_utc') + @(Get-SpeedCaptureEventColumnNames)
     $speedCaptureEventsWriter.WriteLine(
         (ConvertTo-CaptureCsvLine -Values $speedCaptureEventColumns))
+    $imuCaptureColumns =
+        @('capture_elapsed_ms', 'host_received_utc') + @(Get-ImuCaptureColumnNames)
+    $imuCaptureWriter.WriteLine(
+        (ConvertTo-CaptureCsvLine -Values $imuCaptureColumns))
+    $imuCaptureEventColumns =
+        @('capture_elapsed_ms', 'host_received_utc') + @(Get-ImuCaptureEventColumnNames)
+    $imuCaptureEventsWriter.WriteLine(
+        (ConvertTo-CaptureCsvLine -Values $imuCaptureEventColumns))
     $commandsWriter.WriteLine((ConvertTo-CaptureCsvLine -Values @(
         'planned_elapsed_ms',
         'actual_elapsed_ms',
@@ -397,6 +416,42 @@ try {
                 }
                 continue
             }
+            if ($line.StartsWith('IC,', [StringComparison]::Ordinal)) {
+                try {
+                    $sample = ConvertFrom-ImuCaptureSampleLine -Line $line
+                    $rowValues = @(
+                        [uint64]$stopwatch.ElapsedMilliseconds,
+                        [DateTimeOffset]::UtcNow.ToString('O')
+                    )
+                    foreach ($column in (Get-ImuCaptureColumnNames)) {
+                        $rowValues += $sample.$column
+                    }
+                    $imuCaptureWriter.WriteLine(
+                        (ConvertTo-CaptureCsvLine -Values $rowValues))
+                    $imuCaptureRowCount++
+                } catch {
+                    $imuCaptureParseErrorCount++
+                }
+                continue
+            }
+            if ($line.StartsWith('ICAP,', [StringComparison]::Ordinal)) {
+                try {
+                    $event = ConvertFrom-ImuCaptureEventLine -Line $line
+                    $rowValues = @(
+                        [uint64]$stopwatch.ElapsedMilliseconds,
+                        [DateTimeOffset]::UtcNow.ToString('O')
+                    )
+                    foreach ($column in (Get-ImuCaptureEventColumnNames)) {
+                        $rowValues += $event.$column
+                    }
+                    $imuCaptureEventsWriter.WriteLine(
+                        (ConvertTo-CaptureCsvLine -Values $rowValues))
+                    $imuCaptureEventCount++
+                } catch {
+                    $imuCaptureParseErrorCount++
+                }
+                continue
+            }
             if (-not [string]::IsNullOrEmpty($line)) {
                 $nonTelemetryLineCount++
             }
@@ -443,6 +498,14 @@ try {
     if ($null -ne $speedCaptureEventsWriter) {
         $speedCaptureEventsWriter.Flush()
         $speedCaptureEventsWriter.Dispose()
+    }
+    if ($null -ne $imuCaptureWriter) {
+        $imuCaptureWriter.Flush()
+        $imuCaptureWriter.Dispose()
+    }
+    if ($null -ne $imuCaptureEventsWriter) {
+        $imuCaptureEventsWriter.Flush()
+        $imuCaptureEventsWriter.Dispose()
     }
     if ($null -ne $commandsWriter) {
         $commandsWriter.Flush()
@@ -502,6 +565,9 @@ try {
             speed_capture_rows = $speedCaptureRowCount
             speed_capture_events = $speedCaptureEventCount
             speed_capture_parse_errors = $speedCaptureParseErrorCount
+            imu_capture_rows = $imuCaptureRowCount
+            imu_capture_events = $imuCaptureEventCount
+            imu_capture_parse_errors = $imuCaptureParseErrorCount
             non_telemetry_lines = $nonTelemetryLineCount
             commands_scheduled = $schedule.Count
             commands_sent = $commandSentCount
@@ -518,6 +584,8 @@ try {
             motor_capture_events_csv = 'motor_capture_events.csv'
             speed_capture_csv = 'speed_capture.csv'
             speed_capture_events_csv = 'speed_capture_events.csv'
+            imu_capture_csv = 'imu_capture.csv'
+            imu_capture_events_csv = 'imu_capture_events.csv'
             commands_csv = 'commands.csv'
             metadata_json = 'metadata.json'
         }
@@ -541,5 +609,11 @@ try {
     MotorCaptureRows = $motorCaptureRowCount
     MotorCaptureEvents = $motorCaptureEventCount
     MotorCaptureParseErrors = $motorCaptureParseErrorCount
+    SpeedCaptureRows = $speedCaptureRowCount
+    SpeedCaptureEvents = $speedCaptureEventCount
+    SpeedCaptureParseErrors = $speedCaptureParseErrorCount
+    ImuCaptureRows = $imuCaptureRowCount
+    ImuCaptureEvents = $imuCaptureEventCount
+    ImuCaptureParseErrors = $imuCaptureParseErrorCount
     CommandsSent = $commandSentCount
 }

@@ -147,6 +147,29 @@ Assert-Throws {
     ConvertFrom-SpeedCaptureEventLine -Line 'SCAP,1,UNKNOWN,2,0,2200,0,0,0,0,0'
 } '拒绝未知 G3 轮速事件'
 
+$validImuCaptureLine = 'IC,1,7,9,16777215,1234,65535,8,-32768,0,32767,-3,4,-5,-6,3,1'
+$imuCapture = ConvertFrom-ImuCaptureSampleLine -Line $validImuCaptureLine
+Assert-True ($imuCapture.capture_index -eq 7 -and
+             $imuCapture.sensor_timestamp -eq 16777215 -and
+             $imuCapture.raw_accel_x -eq -32768 -and
+             $imuCapture.health -eq 1) '解析 IMU 高速原始样本边界'
+Assert-True ((Get-ImuCaptureColumnNames).Count -eq 15) 'IMU 高速 CSV 列数量固定'
+Assert-Throws {
+    ConvertFrom-ImuCaptureSampleLine -Line ($validImuCaptureLine -replace '^IC,1', 'IC,2')
+} '拒绝未知 IMU 高速版本'
+Assert-Throws {
+    ConvertFrom-ImuCaptureSampleLine -Line ($validImuCaptureLine -replace ',3,1$', ',3,6')
+} '拒绝未知 IMU 健康状态'
+
+$imuCaptureEvent = ConvertFrom-ImuCaptureEventLine -Line 'ICAP,1,END,2,1700,1700,0,0,0'
+Assert-True ($imuCaptureEvent.event -ceq 'END' -and
+             $imuCaptureEvent.sample_count -eq 1700 -and
+             $imuCaptureEvent.source_gap_count -eq 0) '解析 IMU 高速事件'
+Assert-True ((Get-ImuCaptureEventColumnNames).Count -eq 7) 'IMU 高速事件 CSV 列数量固定'
+Assert-Throws {
+    ConvertFrom-ImuCaptureEventLine -Line 'ICAP,1,UNKNOWN,2,0,1700,0,0,0'
+} '拒绝未知 IMU 高速事件'
+
 Assert-Throws { ConvertFrom-AppTelemetryLine -Line ($validLine + ',0') } '拒绝额外字段'
 Assert-Throws { ConvertFrom-AppTelemetryLine -Line ($validLine -replace ',R,', ',X,') } '拒绝错误标签'
 Assert-Throws { ConvertFrom-AppTelemetryLine -Line ($validLine -replace '^T,178946', 'T,-1') } '拒绝负无符号数'

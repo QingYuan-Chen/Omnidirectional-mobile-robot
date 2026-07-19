@@ -38,7 +38,9 @@ $telemetry = @(Import-Csv -LiteralPath $telemetryPath)
 $typedParseErrors = [uint64]0
 foreach ($name in @(
     'stat_parse_errors', 'imuq_parse_errors',
-    'resource_parse_errors', 'event_parse_errors')) {
+    'resource_parse_errors', 'event_parse_errors',
+    'motor_capture_parse_errors', 'speed_capture_parse_errors',
+    'imu_capture_parse_errors')) {
     if ($null -ne $metadata.counts.PSObject.Properties[$name]) {
         $typedParseErrors += [uint64]$metadata.counts.$name
     }

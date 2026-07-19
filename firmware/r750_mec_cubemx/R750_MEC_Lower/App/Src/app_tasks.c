@@ -7,6 +7,7 @@
 #include "app_debug_uart_config.h"
 #include "app_encoder_accumulator.h"
 #include "app_imu.h"
+#include "app_imu_capture.h"
 #include "app_motion_gate.h"
 #include "app_motor_capture.h"
 #include "app_motor_open_loop.h"
@@ -81,18 +82,20 @@ static osThreadId_t task_handles[APP_TASK_COUNT];
 
 typedef enum {
   APP_CAPTURE_MODE_MOTOR = 0,
-  APP_CAPTURE_MODE_SPEED
+  APP_CAPTURE_MODE_SPEED,
+  APP_CAPTURE_MODE_IMU
 } AppCaptureMode;
 
 typedef union {
   AppMotorCapture motor;
   AppSpeedCapture speed;
+  AppImuCapture imu;
 } AppCaptureStorage;
 
 /*
  * CCMRAM 不能被 DMA 访问，但记录与导出都由 CPU 逐样本复制，适合保存大容量高速缓冲。
  * 独立 NOLOAD 段不会占用主 SRAM 或 Flash；AppTasks_Create 会显式初始化全部控制字段。
- * G2 电机与 G3_SPEED 记录器通过 union 互斥复用同一段，禁止同时保留两份 61.6 KB 数组。
+ * G2 电机、G3_SPEED 与 IMU 新接受样本记录器通过 union 互斥复用同一段。
  */
 static AppCaptureStorage capture_storage
   __attribute__((section(".motor_capture"), aligned(4)));
@@ -100,6 +103,7 @@ static volatile AppCaptureMode capture_mode;
 
 #define APP_MOTOR_CAPTURE_STORAGE (&capture_storage.motor)
 #define APP_SPEED_CAPTURE_STORAGE (&capture_storage.speed)
+#define APP_IMU_CAPTURE_STORAGE (&capture_storage.imu)
 
 _Static_assert(sizeof(AppCaptureStorage) <= (64U * 1024U),
                "capture union must fit in 64 KiB CCMRAM");
@@ -139,6 +143,7 @@ static void AppTasks_FillTelemetryInput(
   AppTelemetryInput *input);
 static bool AppTasks_IsMotorStoppedForCapture(
   const AppRuntimeSnapshot *snapshot);
+static bool AppTasks_IsCaptureRecording(void);
 
 typedef enum {
   APP_CAPTURE_EXPORT_IDLE = 0,
@@ -152,10 +157,12 @@ typedef struct {
   union {
     AppMotorCaptureEvent motor;
     AppSpeedCaptureEvent speed;
+    AppImuCaptureEvent imu;
   } event;
   union {
     AppMotorCaptureStatus motor;
     AppSpeedCaptureStatus speed;
+    AppImuCaptureStatus imu;
   } status;
 } AppCapturePendingEvent;
 
@@ -197,6 +204,24 @@ static bool AppTasks_SpeedCaptureEventPush(
   queue->entries[index].mode = APP_CAPTURE_MODE_SPEED;
   queue->entries[index].event.speed = event;
   queue->entries[index].status.speed = *status;
+  queue->count++;
+  return true;
+}
+
+static bool AppTasks_ImuCaptureEventPush(
+  AppCaptureEventQueue *queue,
+  AppImuCaptureEvent event,
+  const AppImuCaptureStatus *status)
+{
+  if (queue == NULL || status == NULL ||
+      queue->count >= APP_CAPTURE_EVENT_QUEUE_DEPTH) {
+    return false;
+  }
+  const uint32_t index =
+    (queue->head + queue->count) % APP_CAPTURE_EVENT_QUEUE_DEPTH;
+  queue->entries[index].mode = APP_CAPTURE_MODE_IMU;
+  queue->entries[index].event.imu = event;
+  queue->entries[index].status.imu = *status;
   queue->count++;
   return true;
 }
@@ -483,6 +508,20 @@ static bool AppTasks_IsMotorStoppedForCapture(
          snapshot->motor_open_loop.target_pwm == 0 &&
          snapshot->motor_open_loop.applied_pwm == 0 &&
          !snapshot->fault_latched;
+}
+
+static bool AppTasks_IsCaptureRecording(void)
+{
+  switch (capture_mode) {
+    case APP_CAPTURE_MODE_MOTOR:
+      return capture_storage.motor.state == APP_MOTOR_CAPTURE_RECORDING;
+    case APP_CAPTURE_MODE_SPEED:
+      return capture_storage.speed.state == APP_SPEED_CAPTURE_RECORDING;
+    case APP_CAPTURE_MODE_IMU:
+      return capture_storage.imu.state == APP_IMU_CAPTURE_RECORDING;
+    default:
+      return true;
+  }
 }
 
 static BspStatus AppTasks_CommitControlMotorOutput(
@@ -824,7 +863,7 @@ static void AppTasks_Control(void *argument)
             APP_MOTOR_CAPTURE_STORAGE, &capture_input)) {
         AppTasks_FailCurrentThread();
       }
-    } else {
+    } else if (capture_mode == APP_CAPTURE_MODE_SPEED) {
       const bool speed_was_recording =
         capture_storage.speed.state == APP_SPEED_CAPTURE_RECORDING;
       AppSpeedCaptureInput speed_input = {
@@ -997,8 +1036,7 @@ static void AppTasks_Comm(void *argument)
         if (command.type == APP_COMM_COMMAND_CAPTURE_START) {
           if (capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
               AppTasks_IsMotorStoppedForCapture(&command_snapshot) &&
-              (capture_mode != APP_CAPTURE_MODE_SPEED ||
-               capture_storage.speed.state != APP_SPEED_CAPTURE_RECORDING)) {
+              !AppTasks_IsCaptureRecording()) {
             if (capture_mode != APP_CAPTURE_MODE_MOTOR) {
               AppMotorCapture_Init(APP_MOTOR_CAPTURE_STORAGE);
               capture_mode = APP_CAPTURE_MODE_MOTOR;
@@ -1074,10 +1112,7 @@ static void AppTasks_Comm(void *argument)
           const bool can_start =
             capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
             AppTasks_IsMotorStoppedForCapture(&command_snapshot) &&
-            ((capture_mode == APP_CAPTURE_MODE_MOTOR &&
-              capture_storage.motor.state != APP_MOTOR_CAPTURE_RECORDING) ||
-             (capture_mode == APP_CAPTURE_MODE_SPEED &&
-              capture_storage.speed.state != APP_SPEED_CAPTURE_RECORDING));
+            !AppTasks_IsCaptureRecording();
           if (can_start &&
               AppControlTimebase_StartMaPeriodCapture() == BSP_OK) {
             AppSpeedCapture_Init(APP_SPEED_CAPTURE_STORAGE);
@@ -1174,6 +1209,85 @@ static void AppTasks_Comm(void *argument)
               communication.capture_event_drop_count, 1U);
           }
         }
+      } else if (command.type >= APP_COMM_COMMAND_IMU_CAPTURE_START &&
+                 command.type <= APP_COMM_COMMAND_IMU_CAPTURE_STATUS) {
+        AppRuntimeSnapshot command_snapshot;
+        AppImuCaptureStatus capture_status;
+        bool command_accepted = false;
+        taskENTER_CRITICAL();
+        command_snapshot = runtime_snapshot;
+        if (command.type == APP_COMM_COMMAND_IMU_CAPTURE_START) {
+          if (capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
+              AppTasks_IsMotorStoppedForCapture(&command_snapshot) &&
+              !AppTasks_IsCaptureRecording()) {
+            AppImuCapture_Init(APP_IMU_CAPTURE_STORAGE);
+            command_accepted =
+              AppImuCapture_Start(APP_IMU_CAPTURE_STORAGE);
+            if (command_accepted) {
+              /*
+               * START 时把最后已发布的接受序号作为基线。IMU 任务后续即使因 BUSY、退避
+               * 或错误重复发布旧 output，也不会把旧样本误记成新样本。
+               */
+              capture_storage.imu.last_sequence =
+                command_snapshot.imu.sequence;
+              capture_storage.imu.has_last_sequence = true;
+              capture_mode = APP_CAPTURE_MODE_IMU;
+            }
+          }
+        } else if (command.type == APP_COMM_COMMAND_IMU_CAPTURE_STOP) {
+          command_accepted =
+            capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
+            capture_mode == APP_CAPTURE_MODE_IMU &&
+            AppImuCapture_Stop(APP_IMU_CAPTURE_STORAGE);
+        } else if (command.type == APP_COMM_COMMAND_IMU_CAPTURE_EXPORT) {
+          command_accepted =
+            capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
+            capture_mode == APP_CAPTURE_MODE_IMU &&
+            AppTasks_IsMotorStoppedForCapture(&command_snapshot) &&
+            AppImuCapture_GetStatus(
+              APP_IMU_CAPTURE_STORAGE, &capture_status) &&
+            capture_status.state == APP_IMU_CAPTURE_COMPLETE &&
+            capture_status.sample_count > 0U;
+          if (command_accepted) {
+            capture_export_state = APP_CAPTURE_EXPORT_BEGIN;
+            capture_export_mode = APP_CAPTURE_MODE_IMU;
+            capture_export_index = 0U;
+          }
+        } else {
+          command_accepted = capture_mode == APP_CAPTURE_MODE_IMU;
+        }
+        if (capture_mode == APP_CAPTURE_MODE_IMU) {
+          if (!AppImuCapture_GetStatus(
+                APP_IMU_CAPTURE_STORAGE, &capture_status)) {
+            taskEXIT_CRITICAL();
+            AppTasks_FailCurrentThread();
+          }
+        } else {
+          memset(&capture_status, 0, sizeof(capture_status));
+          capture_status.state = APP_IMU_CAPTURE_IDLE;
+          capture_status.capacity = ROBOT_CONFIG_IMU_CAPTURE_CAPACITY;
+        }
+        taskEXIT_CRITICAL();
+
+        if (command.type != APP_COMM_COMMAND_IMU_CAPTURE_EXPORT ||
+            !command_accepted) {
+          AppImuCaptureEvent event = APP_IMU_CAPTURE_EVENT_STATUS;
+          if (!command_accepted) {
+            event = APP_IMU_CAPTURE_EVENT_REJECTED;
+            communication.capture_command_reject_count =
+              AppTasks_AddSaturated(
+                communication.capture_command_reject_count, 1U);
+          } else if (command.type == APP_COMM_COMMAND_IMU_CAPTURE_START) {
+            event = APP_IMU_CAPTURE_EVENT_STARTED;
+          } else if (command.type == APP_COMM_COMMAND_IMU_CAPTURE_STOP) {
+            event = APP_IMU_CAPTURE_EVENT_STOPPED;
+          }
+          if (!AppTasks_ImuCaptureEventPush(
+                &capture_events, event, &capture_status)) {
+            communication.capture_event_drop_count = AppTasks_AddSaturated(
+              communication.capture_event_drop_count, 1U);
+          }
+        }
       } else {
         /*
          * EXPORT 开始时已经确认 MA 完全停机；导出结束前继续拒绝普通运动命令，避免异步
@@ -1199,11 +1313,10 @@ static void AppTasks_Comm(void *argument)
               communication.capture_event_drop_count = AppTasks_AddSaturated(
                 communication.capture_event_drop_count, 1U);
             }
-          } else {
+          } else if (capture_mode == APP_CAPTURE_MODE_SPEED) {
             AppSpeedCaptureStatus speed_status;
             taskENTER_CRITICAL();
             const bool speed_status_valid =
-              capture_mode == APP_CAPTURE_MODE_SPEED &&
               AppSpeedCapture_GetStatus(
                 APP_SPEED_CAPTURE_STORAGE, &speed_status);
             taskEXIT_CRITICAL();
@@ -1214,6 +1327,24 @@ static void AppTasks_Comm(void *argument)
                   &capture_events,
                   APP_SPEED_CAPTURE_EVENT_REJECTED,
                   &speed_status)) {
+              communication.capture_event_drop_count = AppTasks_AddSaturated(
+                communication.capture_event_drop_count, 1U);
+            }
+          } else {
+            AppImuCaptureStatus imu_status;
+            taskENTER_CRITICAL();
+            const bool imu_status_valid =
+              capture_mode == APP_CAPTURE_MODE_IMU &&
+              AppImuCapture_GetStatus(
+                APP_IMU_CAPTURE_STORAGE, &imu_status);
+            taskEXIT_CRITICAL();
+            if (!imu_status_valid) {
+              AppTasks_FailCurrentThread();
+            }
+            if (!AppTasks_ImuCaptureEventPush(
+                  &capture_events,
+                  APP_IMU_CAPTURE_EVENT_REJECTED,
+                  &imu_status)) {
               communication.capture_event_drop_count = AppTasks_AddSaturated(
                 communication.capture_event_drop_count, 1U);
             }
@@ -1346,10 +1477,17 @@ static void AppTasks_Comm(void *argument)
             telemetry_frame,
             (uint16_t)sizeof(telemetry_frame),
             &capture_frame_length);
-        } else {
+        } else if (pending_event.mode == APP_CAPTURE_MODE_SPEED) {
           capture_frame_ready = AppSpeedCapture_FormatEvent(
             pending_event.event.speed,
             &pending_event.status.speed,
+            telemetry_frame,
+            (uint16_t)sizeof(telemetry_frame),
+            &capture_frame_length);
+        } else {
+          capture_frame_ready = AppImuCapture_FormatEvent(
+            pending_event.event.imu,
+            &pending_event.status.imu,
             telemetry_frame,
             (uint16_t)sizeof(telemetry_frame),
             &capture_frame_length);
@@ -1400,7 +1538,7 @@ static void AppTasks_Comm(void *argument)
               (uint16_t)sizeof(telemetry_frame),
               &capture_frame_length);
           }
-        } else {
+        } else if (capture_export_mode == APP_CAPTURE_MODE_SPEED) {
           AppSpeedCaptureStatus capture_status;
           taskENTER_CRITICAL();
           const bool status_valid = AppSpeedCapture_GetStatus(
@@ -1439,6 +1577,50 @@ static void AppTasks_Comm(void *argument)
             capture_export_state = APP_CAPTURE_EXPORT_END;
             capture_frame_ready = AppSpeedCapture_FormatEvent(
               APP_SPEED_CAPTURE_EVENT_END,
+              &capture_status,
+              telemetry_frame,
+              (uint16_t)sizeof(telemetry_frame),
+              &capture_frame_length);
+          }
+        } else {
+          AppImuCaptureStatus capture_status;
+          taskENTER_CRITICAL();
+          const bool status_valid = AppImuCapture_GetStatus(
+            APP_IMU_CAPTURE_STORAGE, &capture_status);
+          taskEXIT_CRITICAL();
+          if (!status_valid ||
+              capture_status.state != APP_IMU_CAPTURE_COMPLETE) {
+            AppTasks_FailCurrentThread();
+          }
+
+          if (capture_export_state == APP_CAPTURE_EXPORT_BEGIN) {
+            capture_frame_ready = AppImuCapture_FormatEvent(
+              APP_IMU_CAPTURE_EVENT_BEGIN,
+              &capture_status,
+              telemetry_frame,
+              (uint16_t)sizeof(telemetry_frame),
+              &capture_frame_length);
+          } else if (
+            capture_export_state == APP_CAPTURE_EXPORT_SAMPLES &&
+            capture_export_index < capture_status.sample_count) {
+            AppImuCaptureSample sample;
+            taskENTER_CRITICAL();
+            const bool sample_valid = AppImuCapture_GetSample(
+              APP_IMU_CAPTURE_STORAGE, capture_export_index, &sample);
+            taskEXIT_CRITICAL();
+            if (!sample_valid) {
+              AppTasks_FailCurrentThread();
+            }
+            capture_frame_ready = AppImuCapture_FormatSample(
+              capture_export_index,
+              &sample,
+              telemetry_frame,
+              (uint16_t)sizeof(telemetry_frame),
+              &capture_frame_length);
+          } else {
+            capture_export_state = APP_CAPTURE_EXPORT_END;
+            capture_frame_ready = AppImuCapture_FormatEvent(
+              APP_IMU_CAPTURE_EVENT_END,
               &capture_status,
               telemetry_frame,
               (uint16_t)sizeof(telemetry_frame),
@@ -1505,13 +1687,50 @@ static void AppTasks_Imu(void *argument)
     const uint32_t now_ms = HAL_GetTick();
     const BspStatus status = AppImu_Process(now_ms, &output);
 
+    AppImuCaptureInput capture_input;
+    if (status == BSP_OK) {
+      /*
+       * 只有 AppImu_Process 真正接受并推进 sequence 的输出才有资格进入 IC 记录器。
+       * BUSY、退避、重复时间戳和错误路径虽继续发布健康快照，但绝不能按任务唤醒次数
+       * 伪造高速样本。
+       */
+      capture_input = (AppImuCaptureInput){
+        .sequence = output.sequence,
+        .sensor_timestamp = output.sensor_timestamp,
+        .host_tick_ms = output.host_tick_ms,
+        .flags = output.flags,
+        .dropped_sample_count = output.dropped_sample_count,
+        .temperature = output.raw_sample.temperature,
+        .sensor_status = output.raw_sample.status,
+        .health = (uint8_t)output.health,
+      };
+      memcpy(
+        capture_input.acceleration,
+        output.raw_sample.acceleration,
+        sizeof(capture_input.acceleration));
+      memcpy(
+        capture_input.angular_rate,
+        output.raw_sample.angular_rate,
+        sizeof(capture_input.angular_rate));
+    }
+
+    /*
+     * 发布新 sequence 与记录同一接受样本必须是一个不可调度事务。否则 commTask 可能
+     * 在两者之间执行 START，把刚发布但尚未记录的 sequence 当作基线，随后把正常首样本
+     * 误计为 duplicate。这里仅复制 36 B 固定记录且不阻塞，适合沿用既有调度器暂停区。
+     */
     bool motion_available = false;
+    bool capture_ok = true;
     vTaskSuspendAll();
     runtime_snapshot.imu = output;
     const bool gate_updated = AppTasks_RefreshMotionGate(
       now_ms, &motion_available);
+    if (status == BSP_OK && capture_mode == APP_CAPTURE_MODE_IMU) {
+      capture_ok = AppImuCapture_Record(
+        APP_IMU_CAPTURE_STORAGE, &capture_input);
+    }
     (void)xTaskResumeAll();
-    if (!gate_updated) {
+    if (!gate_updated || !capture_ok) {
       AppTasks_FailCurrentThread();
     }
 

@@ -557,6 +557,92 @@ function ConvertFrom-SpeedCaptureEventLine {
     }
 }
 
+function Get-ImuCaptureColumnNames {
+    return @(
+        'capture_index', 'imu_sequence', 'sensor_timestamp',
+        'host_tick_ms', 'flags', 'source_dropped_sample_count',
+        'raw_accel_x', 'raw_accel_y', 'raw_accel_z',
+        'raw_gyro_x', 'raw_gyro_y', 'raw_gyro_z',
+        'raw_temperature', 'sensor_status', 'health'
+    )
+}
+
+function ConvertFrom-ImuCaptureSampleLine {
+    param([Parameter(Mandatory = $true)][string]$Line)
+
+    $tokens = $Line.TrimEnd([char]13).Split(
+        [char[]]@(','), [StringSplitOptions]::None)
+    if ($tokens.Count -ne 17 -or $tokens[0] -cne 'IC' -or
+        $tokens[1] -cne '1') {
+        throw 'IMU 高速样本必须是 17 字段的 IC,1 帧'
+    }
+    $u32Maximum = [uint64][uint32]::MaxValue
+    $record = [ordered]@{
+        capture_index =
+            ConvertTo-AppTelemetryUnsigned $tokens[2] $u32Maximum 'capture_index'
+        imu_sequence =
+            ConvertTo-AppTelemetryUnsigned $tokens[3] $u32Maximum 'imu_sequence'
+        sensor_timestamp =
+            ConvertTo-AppTelemetryUnsigned $tokens[4] 16777215 'sensor_timestamp'
+        host_tick_ms =
+            ConvertTo-AppTelemetryUnsigned $tokens[5] $u32Maximum 'host_tick_ms'
+        flags =
+            ConvertTo-AppTelemetryUnsigned $tokens[6] 65535 'flags'
+        source_dropped_sample_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[7] $u32Maximum 'source_dropped_sample_count'
+    }
+    $rawNames = @(
+        'raw_accel_x', 'raw_accel_y', 'raw_accel_z',
+        'raw_gyro_x', 'raw_gyro_y', 'raw_gyro_z', 'raw_temperature')
+    for ($index = 0; $index -lt $rawNames.Count; $index++) {
+        $record[$rawNames[$index]] = ConvertTo-AppTelemetrySigned `
+            $tokens[8 + $index] ([int16]::MinValue) ([int16]::MaxValue) $rawNames[$index]
+    }
+    $record.sensor_status =
+        ConvertTo-AppTelemetryUnsigned $tokens[15] 255 'sensor_status'
+    $record.health =
+        ConvertTo-AppTelemetryUnsigned $tokens[16] 5 'health'
+    return [pscustomobject]$record
+}
+
+function Get-ImuCaptureEventColumnNames {
+    return @(
+        'event', 'state', 'sample_count', 'capacity',
+        'dropped_sample_count', 'duplicate_sequence_count',
+        'source_gap_count'
+    )
+}
+
+function ConvertFrom-ImuCaptureEventLine {
+    param([Parameter(Mandatory = $true)][string]$Line)
+
+    $tokens = $Line.TrimEnd([char]13).Split(
+        [char[]]@(','), [StringSplitOptions]::None)
+    if ($tokens.Count -ne 9 -or $tokens[0] -cne 'ICAP' -or
+        $tokens[1] -cne '1') {
+        throw 'IMU 高速事件必须是 9 字段的 ICAP,1 帧'
+    }
+    $allowedEvents = @('STATUS', 'STARTED', 'STOPPED', 'BEGIN', 'END', 'REJECTED')
+    if ($tokens[2] -cnotin $allowedEvents) {
+        throw "未知 IMU 高速事件：$($tokens[2])"
+    }
+    $u32Maximum = [uint64][uint32]::MaxValue
+    return [pscustomobject][ordered]@{
+        event = $tokens[2]
+        state = ConvertTo-AppTelemetryUnsigned $tokens[3] 2 'capture_state'
+        sample_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[4] $u32Maximum 'sample_count'
+        capacity =
+            ConvertTo-AppTelemetryUnsigned $tokens[5] $u32Maximum 'capacity'
+        dropped_sample_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[6] $u32Maximum 'dropped_sample_count'
+        duplicate_sequence_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[7] $u32Maximum 'duplicate_sequence_count'
+        source_gap_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[8] $u32Maximum 'source_gap_count'
+    }
+}
+
 function ConvertTo-CaptureCsvField {
     param(
         [AllowNull()]

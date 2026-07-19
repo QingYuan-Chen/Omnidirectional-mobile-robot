@@ -12,6 +12,8 @@
 - `events.csv`：带板端时刻、序号、变化位掩码和当前安全状态快照的事件；
 - `motor_capture.csv`：停车后导出的板内 1 kHz MA 电机高速样本；
 - `motor_capture_events.csv`：高速记录开始、停止、导出边界和拒绝事件；
+- `imu_capture.csv`：停车状态下导出的板内 IMU 质量链接受样本；
+- `imu_capture_events.csv`：IMU 记录开始、停止、导出边界和拒绝事件；
 - `commands.csv`：计划时间、实际发送时间、命令文本和发送结果；
 - `metadata.json`：固件提交、工具哈希、仓库状态、主机和串口配置、起止时间、计数与产物名称。
 
@@ -110,6 +112,28 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 25%，且全部丢失、截止期、缓冲丢弃和错误增量为 0；即使高速样本完整，只要导出期间
 `uart_tx_fault_count` 等任一错误增加，`accepted` 也必须为 `false`。
 
+## 板内 IMU 新接受样本采集
+
+IMU 记录器使用同一 CCMRAM union 的独立视图，固定保存 1700 个、每个 36 B 的样本。
+它与 `MOTOR`、`G3_SPEED` 两种模式互斥，支持：
+
+- `CAPTURE IMU START`：仅在 MA 完全停机、无锁存故障且没有其他记录器正在记录或导出时开始；
+- `CAPTURE IMU STOP`：停止并保留已接受样本；
+- `CAPTURE IMU STATUS`：输出状态、样本数、固定容量及三种丢失/断点计数；
+- `CAPTURE IMU EXPORT`：仅在记录完成且 MA 完全停机后异步导出。
+
+样本行 `IC,1,...` 保存应用接受序号、24 位传感器时间戳、主机毫秒时刻、质量标志、
+源丢样累计值、原始六轴、温度、STATUS0 和健康级；事件行使用 `ICAP,1,...`。这里的
+“高速”是按 IMU 新接受样本触发，不按 IMU 任务唤醒次数填行：`BSP_BUSY`、退避、总线
+错误、重复时间戳、突变拒绝和估计器失败不会产生 `IC` 行，其诊断必须结合 `IMUQ`。
+
+`tools/analyze_imu_capture.ps1` 要求唯一且一致的 `BEGIN/END`、固定容量 1700、至少
+100 个样本、连续索引和接受序号、1 至 11 的传感器时间戳步长、前进的主机时刻、
+STATUS0 加速度计/陀螺仪就绪位，以及记录器和源丢样计数均为 0。它还按配置的
+224.2 Hz 比较传感器步数理论时长与主机累计时长，容差为 `max(10 ms, 2%)`。这能拒绝
+明显不一致的离线证据，但最终 ODR、轴向和真实导出链仍必须以无动力板测关闭；完整流程
+见 `imu_capture_procedure.md`。
+
 ## CSV 字段与失败处理
 
 `telemetry.csv` 的前两列是 `capture_elapsed_ms` 和 `host_received_utc`，其后固定为既有
@@ -122,9 +146,11 @@ IMU 健康和 int16 PWM 范围。
 整数边界、枚举、布尔值、事件位掩码或 UART 队列深度不合法时，该行不进入 CSV。任何
 完整性分析都必须同时检查四类解析错误，不能只读取旧 `telemetry_parse_errors`。
 
-`motor_capture.csv` 与 `motor_capture_events.csv` 同样带有主机接收时间。未知版本、字段
-数量、整数边界、电机状态、安全位或事件类型会累计到
-`motor_capture_parse_errors`，不得作为完整高速证据。
+`motor_capture.csv`、`motor_capture_events.csv`、`imu_capture.csv` 与
+`imu_capture_events.csv` 同样带有主机接收时间。未知版本、字段数量、整数边界、电机
+状态、安全位、IMU 健康级或事件类型分别累计到对应的 `*_parse_errors`，不得作为完整
+高速证据。既有 G2 捕获、工作点和死区入口已把 IMU 行/事件纳入总行数闭合并拒绝 IMU
+解析错误；新增 schema 不改变原有 G2 数值字段或结论。
 
 如果串口不存在、被占用或运行中发生异常，脚本返回失败，同时尽可能关闭串口和文件，并在已创建的采集目录中保留 `outcome=failed` 的 `metadata.json`。因此失败尝试也能追溯其端口、时间和错误原因。
 
@@ -136,6 +162,7 @@ IMU 健康和 int16 PWM 范围。
 .\tools\run_host_tests.ps1 -Clean
 ```
 
-当前统一主机测试为 25/25；串口解析在 PowerShell 7 和 Windows PowerShell 5.1 下均为
-48 项断言通过。测试不需要连接开发板；真正的 USART2 周期、`STATUS` 响应、四类行数、
-队列失败计数和原始字节保存仍必须通过一次无动力实机采集验收。
+当前统一主机测试为 27/27；串口解析在 PowerShell 7 和 Windows PowerShell 5.1 下均为
+55 项断言通过，IMU 高速分析专项在两个版本下均为 8 项断言通过。测试不需要连接开发板；
+真正的 USART2 周期、`STATUS` 响应、四类低频行数、IMU 实际 ODR/时间戳/STATUS0、队列
+失败计数和原始字节保存仍必须通过无动力实机采集验收。

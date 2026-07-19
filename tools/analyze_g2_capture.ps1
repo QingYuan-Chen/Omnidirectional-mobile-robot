@@ -46,8 +46,18 @@ foreach ($name in @('imuq_rows', 'resource_rows', 'event_rows')) {
     }
 }
 foreach ($name in @(
+    'motor_capture_rows', 'motor_capture_events',
+    'speed_capture_rows', 'speed_capture_events',
+    'imu_capture_rows', 'imu_capture_events')) {
+    if ($null -ne $metadata.counts.PSObject.Properties[$name]) {
+        $additionalTypedRows += [uint64]$metadata.counts.$name
+    }
+}
+foreach ($name in @(
     'stat_parse_errors', 'imuq_parse_errors',
-    'resource_parse_errors', 'event_parse_errors')) {
+    'resource_parse_errors', 'event_parse_errors',
+    'motor_capture_parse_errors', 'speed_capture_parse_errors',
+    'imu_capture_parse_errors')) {
     if ($null -ne $metadata.counts.PSObject.Properties[$name]) {
         $typedParseErrors += [uint64]$metadata.counts.$name
     }

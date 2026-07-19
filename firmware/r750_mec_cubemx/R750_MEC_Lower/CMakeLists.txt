@@ -59,6 +59,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/app_telemetry.c
     App/Src/app_wheel_speed_estimator.c
     App/Src/app_imu.c
+    App/Src/app_imu_capture.c
     App/Src/app_tasks.c
     App/Src/imu_eskf.c
     App/Bsp/Src/bsp.c

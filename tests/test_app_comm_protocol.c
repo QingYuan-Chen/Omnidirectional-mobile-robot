@@ -102,8 +102,20 @@ static void TestValidCommands(void)
   assert(Feed(
     &protocol, "CAPTURE SPEED STATUS\n", &command) == APP_COMM_FEED_COMMAND);
   assert(command.type == APP_COMM_COMMAND_SPEED_CAPTURE_STATUS);
+  assert(Feed(
+    &protocol, "CAPTURE IMU START\n", &command) == APP_COMM_FEED_COMMAND);
+  assert(command.type == APP_COMM_COMMAND_IMU_CAPTURE_START);
+  assert(Feed(
+    &protocol, "CAPTURE IMU STOP\n", &command) == APP_COMM_FEED_COMMAND);
+  assert(command.type == APP_COMM_COMMAND_IMU_CAPTURE_STOP);
+  assert(Feed(
+    &protocol, "CAPTURE IMU EXPORT\n", &command) == APP_COMM_FEED_COMMAND);
+  assert(command.type == APP_COMM_COMMAND_IMU_CAPTURE_EXPORT);
+  assert(Feed(
+    &protocol, "CAPTURE IMU STATUS\n", &command) == APP_COMM_FEED_COMMAND);
+  assert(command.type == APP_COMM_COMMAND_IMU_CAPTURE_STATUS);
   assert(AppCommProtocol_GetStats(&protocol, &stats));
-  assert(stats.accepted_command_count == 13U);
+  assert(stats.accepted_command_count == 17U);
   assert(AppCommProtocol_GetRejectedCount(&stats) == 0U);
 }
 
@@ -141,13 +153,15 @@ static void TestNumericRangeAndSyntax(void)
   assert(Feed(&protocol, "CAPTURE RESET\n", &command) == APP_COMM_FEED_REJECTED);
   assert(Feed(
     &protocol, "CAPTURE SPEED RESET\n", &command) == APP_COMM_FEED_REJECTED);
+  assert(Feed(
+    &protocol, "CAPTURE IMU RESET\n", &command) == APP_COMM_FEED_REJECTED);
   assert(Feed(&protocol, "CAPTURE START extra\n", &command) == APP_COMM_FEED_REJECTED);
   assert(Feed(&protocol, "\n", &command) == APP_COMM_FEED_REJECTED);
   assert(Feed(&protocol, "ST\rATUS\n", &command) == APP_COMM_FEED_REJECTED);
   assert(AppCommProtocol_GetStats(&protocol, &stats));
   assert(stats.numeric_error_count == 3U);
   assert(stats.range_error_count == 2U);
-  assert(stats.syntax_error_count == 7U);
+  assert(stats.syntax_error_count == 8U);
   assert(stats.accepted_command_count == 0U);
 }
 
