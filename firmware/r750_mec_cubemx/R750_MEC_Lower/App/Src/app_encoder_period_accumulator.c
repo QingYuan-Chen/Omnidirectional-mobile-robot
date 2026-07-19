@@ -70,11 +70,7 @@ bool AppEncoderPeriodAccumulator_OnEdge(
 
   if (accumulator->period_count == UINT16_MAX ||
       period_cycles > (UINT32_MAX - accumulator->period_sum_cycles)) {
-    accumulator->period_sum_cycles = 0U;
-    accumulator->period_count = 0U;
-    accumulator->pending_flags |= APP_ENCODER_PERIOD_FLAG_AGGREGATE_DROPPED;
-    accumulator->stats.aggregate_drop_count = AppEncoderPeriod_AddSaturated(
-      accumulator->stats.aggregate_drop_count, 1U);
+    AppEncoderPeriodAccumulator_MarkAggregateDropped(accumulator);
     return false;
   }
 
@@ -82,6 +78,25 @@ bool AppEncoderPeriodAccumulator_OnEdge(
   accumulator->period_count++;
   accumulator->pending_flags |= APP_ENCODER_PERIOD_FLAG_HAS_PERIOD;
   return true;
+}
+
+void AppEncoderPeriodAccumulator_MarkAggregateDropped(
+  AppEncoderPeriodAccumulator *accumulator)
+{
+  if (accumulator == NULL) {
+    return;
+  }
+  accumulator->period_sum_cycles = 0U;
+  accumulator->period_count = 0U;
+  accumulator->has_edge = false;
+  accumulator->direction = 0;
+  accumulator->pending_flags &=
+    (uint8_t)~(
+      APP_ENCODER_PERIOD_FLAG_HAS_EDGE |
+      APP_ENCODER_PERIOD_FLAG_HAS_PERIOD);
+  accumulator->pending_flags |= APP_ENCODER_PERIOD_FLAG_AGGREGATE_DROPPED;
+  accumulator->stats.aggregate_drop_count = AppEncoderPeriod_AddSaturated(
+    accumulator->stats.aggregate_drop_count, 1U);
 }
 
 bool AppEncoderPeriodAccumulator_Snapshot(

@@ -65,9 +65,21 @@ static void TestAggregateOverflowIsRejected(void)
   assert(AppEncoderPeriodAccumulator_Snapshot(&accumulator, 111U, &snapshot));
   assert(snapshot.period_sum_cycles == 0U);
   assert(snapshot.period_count == 0U);
+  assert(snapshot.direction == 0);
+  assert((snapshot.flags & APP_ENCODER_PERIOD_FLAG_HAS_EDGE) == 0U);
   assert((snapshot.flags & APP_ENCODER_PERIOD_FLAG_AGGREGATE_DROPPED) != 0U);
   assert(AppEncoderPeriodAccumulator_GetStats(&accumulator, &stats));
   assert(stats.aggregate_drop_count == 1U);
+
+  accumulator.period_sum_cycles = 100U;
+  accumulator.period_count = 2U;
+  AppEncoderPeriodAccumulator_MarkAggregateDropped(&accumulator);
+  assert(AppEncoderPeriodAccumulator_Snapshot(&accumulator, 112U, &snapshot));
+  assert(snapshot.period_sum_cycles == 0U);
+  assert(snapshot.period_count == 0U);
+  assert((snapshot.flags & APP_ENCODER_PERIOD_FLAG_AGGREGATE_DROPPED) != 0U);
+  assert(AppEncoderPeriodAccumulator_GetStats(&accumulator, &stats));
+  assert(stats.aggregate_drop_count == 2U);
 }
 
 int main(void)

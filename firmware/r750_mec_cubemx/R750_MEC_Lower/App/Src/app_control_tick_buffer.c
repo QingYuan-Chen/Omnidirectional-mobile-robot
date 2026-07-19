@@ -36,6 +36,12 @@ void AppControlTickBuffer_Init(AppControlTickBuffer *buffer)
     slot->irq_timestamp_cycles = 0U;
     slot->irq_period_cycles = 0U;
     slot->timer_irq_missed_period_count = 0U;
+    slot->encoder_period_ma.period_sum_cycles = 0U;
+    slot->encoder_period_ma.last_edge_age_cycles = 0U;
+    slot->encoder_period_ma.event_sequence = 0U;
+    slot->encoder_period_ma.period_count = 0U;
+    slot->encoder_period_ma.direction = 0;
+    slot->encoder_period_ma.flags = 0U;
     for (uint32_t motor_index = 0U; motor_index < (uint32_t)BSP_MOTOR_COUNT; ++motor_index) {
       slot->encoder_raw[motor_index] = 0U;
     }
@@ -47,9 +53,10 @@ void AppControlTickBuffer_PublishFromIsr(
   uint32_t irq_timestamp_cycles,
   uint32_t irq_period_cycles,
   uint32_t timer_irq_missed_period_count,
+  const AppEncoderPeriodSnapshot *encoder_period_ma,
   const uint16_t encoder_raw[BSP_MOTOR_COUNT])
 {
-  if (buffer == NULL || encoder_raw == NULL) {
+  if (buffer == NULL || encoder_period_ma == NULL || encoder_raw == NULL) {
     return;
   }
 
@@ -58,6 +65,14 @@ void AppControlTickBuffer_PublishFromIsr(
   slot->irq_timestamp_cycles = irq_timestamp_cycles;
   slot->irq_period_cycles = irq_period_cycles;
   slot->timer_irq_missed_period_count = timer_irq_missed_period_count;
+  slot->encoder_period_ma.period_sum_cycles =
+    encoder_period_ma->period_sum_cycles;
+  slot->encoder_period_ma.last_edge_age_cycles =
+    encoder_period_ma->last_edge_age_cycles;
+  slot->encoder_period_ma.event_sequence = encoder_period_ma->event_sequence;
+  slot->encoder_period_ma.period_count = encoder_period_ma->period_count;
+  slot->encoder_period_ma.direction = encoder_period_ma->direction;
+  slot->encoder_period_ma.flags = encoder_period_ma->flags;
   for (uint32_t motor_index = 0U; motor_index < (uint32_t)BSP_MOTOR_COUNT; ++motor_index) {
     slot->encoder_raw[motor_index] = encoder_raw[motor_index];
   }
@@ -94,6 +109,16 @@ bool AppControlTickBuffer_Consume(
   sample->irq_timestamp_cycles = slot->irq_timestamp_cycles;
   sample->irq_period_cycles = slot->irq_period_cycles;
   sample->timer_irq_missed_period_count = slot->timer_irq_missed_period_count;
+  sample->encoder_period_ma.period_sum_cycles =
+    slot->encoder_period_ma.period_sum_cycles;
+  sample->encoder_period_ma.last_edge_age_cycles =
+    slot->encoder_period_ma.last_edge_age_cycles;
+  sample->encoder_period_ma.event_sequence =
+    slot->encoder_period_ma.event_sequence;
+  sample->encoder_period_ma.period_count =
+    slot->encoder_period_ma.period_count;
+  sample->encoder_period_ma.direction = slot->encoder_period_ma.direction;
+  sample->encoder_period_ma.flags = slot->encoder_period_ma.flags;
   for (uint32_t motor_index = 0U; motor_index < (uint32_t)BSP_MOTOR_COUNT; ++motor_index) {
     sample->encoder_raw[motor_index] = slot->encoder_raw[motor_index];
   }

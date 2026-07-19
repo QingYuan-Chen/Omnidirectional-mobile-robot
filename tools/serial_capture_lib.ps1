@@ -288,6 +288,115 @@ function ConvertFrom-MotorCaptureEventLine {
     }
 }
 
+function Get-SpeedCaptureColumnNames {
+    return @(
+        'capture_index',
+        'control_tick_sequence',
+        'irq_timestamp_cycles',
+        'encoder_delta_ma',
+        'applied_pwm',
+        'period_sum_cycles',
+        'period_count',
+        'last_edge_age_cycles',
+        'event_sequence',
+        'direction',
+        'period_flags'
+    )
+}
+
+function ConvertFrom-SpeedCaptureSampleLine {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Line
+    )
+
+    $tokens = $Line.TrimEnd([char]13).Split(
+        [char[]]@(','),
+        [StringSplitOptions]::None)
+    if ($tokens.Count -ne 13 -or $tokens[0] -cne 'SC' -or $tokens[1] -cne '1') {
+        throw 'G3 轮速样本必须是 13 字段的 SC,1 帧'
+    }
+
+    $u32Maximum = [uint64][uint32]::MaxValue
+    $u16Maximum = [uint64][uint16]::MaxValue
+    return [pscustomobject][ordered]@{
+        capture_index =
+            ConvertTo-AppTelemetryUnsigned $tokens[2] $u32Maximum 'capture_index'
+        control_tick_sequence =
+            ConvertTo-AppTelemetryUnsigned $tokens[3] $u32Maximum 'control_tick_sequence'
+        irq_timestamp_cycles =
+            ConvertTo-AppTelemetryUnsigned $tokens[4] $u32Maximum 'irq_timestamp_cycles'
+        encoder_delta_ma =
+            ConvertTo-AppTelemetrySigned $tokens[5] ([int16]::MinValue) ([int16]::MaxValue) 'encoder_delta_ma'
+        applied_pwm =
+            ConvertTo-AppTelemetrySigned $tokens[6] ([int16]::MinValue) ([int16]::MaxValue) 'applied_pwm'
+        period_sum_cycles =
+            ConvertTo-AppTelemetryUnsigned $tokens[7] $u32Maximum 'period_sum_cycles'
+        period_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[8] $u16Maximum 'period_count'
+        last_edge_age_cycles =
+            ConvertTo-AppTelemetryUnsigned $tokens[9] $u32Maximum 'last_edge_age_cycles'
+        event_sequence =
+            ConvertTo-AppTelemetryUnsigned $tokens[10] $u32Maximum 'event_sequence'
+        direction =
+            ConvertTo-AppTelemetrySigned $tokens[11] -1 1 'direction'
+        period_flags =
+            ConvertTo-AppTelemetryUnsigned $tokens[12] 31 'period_flags'
+    }
+}
+
+function Get-SpeedCaptureEventColumnNames {
+    return @(
+        'event',
+        'state',
+        'sample_count',
+        'capacity',
+        'dropped_sample_count',
+        'invalid_direction_count',
+        'zero_period_count',
+        'aggregate_drop_count',
+        'direction_reset_count'
+    )
+}
+
+function ConvertFrom-SpeedCaptureEventLine {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Line
+    )
+
+    $tokens = $Line.TrimEnd([char]13).Split(
+        [char[]]@(','),
+        [StringSplitOptions]::None)
+    if ($tokens.Count -ne 11 -or $tokens[0] -cne 'SCAP' -or $tokens[1] -cne '1') {
+        throw 'G3 轮速事件必须是 11 字段的 SCAP,1 帧'
+    }
+    $allowedEvents = @('STATUS', 'STARTED', 'STOPPED', 'BEGIN', 'END', 'REJECTED')
+    if ($tokens[2] -cnotin $allowedEvents) {
+        throw "未知 G3 轮速事件：$($tokens[2])"
+    }
+
+    $u32Maximum = [uint64][uint32]::MaxValue
+    return [pscustomobject][ordered]@{
+        event = $tokens[2]
+        state = ConvertTo-AppTelemetryUnsigned $tokens[3] 2 'capture_state'
+        sample_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[4] $u32Maximum 'sample_count'
+        capacity =
+            ConvertTo-AppTelemetryUnsigned $tokens[5] $u32Maximum 'capacity'
+        dropped_sample_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[6] $u32Maximum 'dropped_sample_count'
+        invalid_direction_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[7] $u32Maximum 'invalid_direction_count'
+        zero_period_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[8] $u32Maximum 'zero_period_count'
+        aggregate_drop_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[9] $u32Maximum 'aggregate_drop_count'
+        direction_reset_count =
+            ConvertTo-AppTelemetryUnsigned $tokens[10] $u32Maximum 'direction_reset_count'
+    }
+}
+
 function ConvertTo-CaptureCsvField {
     param(
         [AllowNull()]

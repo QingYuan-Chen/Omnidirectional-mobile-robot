@@ -75,6 +75,31 @@ Assert-Throws {
     ConvertFrom-MotorCaptureEventLine -Line 'MCAP,1,UNKNOWN,2,0,2200,0'
 } '拒绝未知高速采集事件'
 
+$validSpeedCaptureLine = 'SC,1,7,17,1176000,-32768,840,4294967295,65535,25,99,-1,31'
+$speedCapture = ConvertFrom-SpeedCaptureSampleLine -Line $validSpeedCaptureLine
+Assert-True ($speedCapture.capture_index -eq 7 -and
+             $speedCapture.encoder_delta_ma -eq -32768) '解析 G3 轮速样本索引与增量'
+Assert-True ($speedCapture.period_sum_cycles -eq [uint32]::MaxValue -and
+             $speedCapture.period_count -eq [uint16]::MaxValue -and
+             $speedCapture.direction -eq -1) '解析 G3 周期聚合边界'
+Assert-True ((Get-SpeedCaptureColumnNames).Count -eq 11) 'G3 轮速 CSV 列数量固定'
+Assert-Throws {
+    ConvertFrom-SpeedCaptureSampleLine -Line ($validSpeedCaptureLine -replace ',-1,31$', ',2,31')
+} '拒绝非法 G3 方向'
+Assert-Throws {
+    ConvertFrom-SpeedCaptureSampleLine -Line ($validSpeedCaptureLine -replace '^SC,1', 'SC,2')
+} '拒绝未知 G3 样本版本'
+
+$speedCaptureEvent = ConvertFrom-SpeedCaptureEventLine -Line 'SCAP,1,BEGIN,2,2200,2200,1,2,3,4,5'
+Assert-True ($speedCaptureEvent.event -ceq 'BEGIN' -and
+             $speedCaptureEvent.sample_count -eq 2200 -and
+             $speedCaptureEvent.aggregate_drop_count -eq 4 -and
+             $speedCaptureEvent.direction_reset_count -eq 5) '解析 G3 轮速事件'
+Assert-True ((Get-SpeedCaptureEventColumnNames).Count -eq 9) 'G3 轮速事件 CSV 列数量固定'
+Assert-Throws {
+    ConvertFrom-SpeedCaptureEventLine -Line 'SCAP,1,UNKNOWN,2,0,2200,0,0,0,0,0'
+} '拒绝未知 G3 轮速事件'
+
 Assert-Throws { ConvertFrom-AppTelemetryLine -Line ($validLine + ',0') } '拒绝额外字段'
 Assert-Throws { ConvertFrom-AppTelemetryLine -Line ($validLine -replace ',R,', ',X,') } '拒绝错误标签'
 Assert-Throws { ConvertFrom-AppTelemetryLine -Line ($validLine -replace '^T,178946', 'T,-1') } '拒绝负无符号数'

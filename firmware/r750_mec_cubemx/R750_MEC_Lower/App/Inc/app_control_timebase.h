@@ -1,6 +1,7 @@
 #ifndef APP_CONTROL_TIMEBASE_H
 #define APP_CONTROL_TIMEBASE_H
 
+#include "app_encoder_period_accumulator.h"
 #include "bsp_types.h"
 
 #include <stdint.h>
@@ -31,6 +32,7 @@ typedef struct {
   uint32_t timer_irq_missed_period_count;
   uint32_t task_wake_cycles;
   uint32_t notification_count;
+  AppEncoderPeriodSnapshot encoder_period_ma;
   uint16_t encoder_raw[BSP_MOTOR_COUNT];
 } AppControlTick;
 
@@ -53,6 +55,16 @@ BspStatus AppControlTimebase_Stop(void);
 BspStatus AppControlTimebase_Wait(AppControlTick *tick);
 /* 返回当前 32 位 DWT 周期计数，允许自然回绕，用于周期执行时间和截止期计算。 */
 uint32_t AppControlTimebase_GetCycleCount(void);
+
+/*
+ * G3_SPEED 诊断专用 MA TIM2 CC1 边沿事件。
+ * Start 仅在 TIM7/DWT 已运行时启用，运行时设置 IRQ 优先级并只打开 CC1；Stop 关闭并清
+ * pending。该路径不修改 CubeMX 的常驻 NVIC 配置，普通 G2 电机采集期间保持完全关闭。
+ */
+BspStatus AppControlTimebase_StartMaPeriodCapture(void);
+BspStatus AppControlTimebase_StopMaPeriodCapture(void);
+bool AppControlTimebase_GetMaPeriodStats(AppEncoderPeriodStats *stats);
+void AppControlTimebase_OnMaEncoderIrqFromIsr(void);
 /*
  * TIM7 向量入口钩子。必须在 HAL_TIM_IRQHandler 之前调用，以减小 HAL 分派开销对中断
  * 周期和任务唤醒延迟测量的污染；未启动时不产生状态变化。

@@ -11,6 +11,7 @@
 #include "app_motor_capture.h"
 #include "app_motor_open_loop.h"
 #include "app_safety_policy.h"
+#include "app_speed_capture.h"
 #include "app_telemetry.h"
 #include "bsp_adc.h"
 #include "bsp_encoder.h"
@@ -71,12 +72,31 @@ _Static_assert(
 static osEventFlagsId_t runtime_events;
 static osMessageQueueId_t motor_command_queue;
 static osThreadId_t task_handles[APP_TASK_COUNT];
+
+typedef enum {
+  APP_CAPTURE_MODE_MOTOR = 0,
+  APP_CAPTURE_MODE_SPEED
+} AppCaptureMode;
+
+typedef union {
+  AppMotorCapture motor;
+  AppSpeedCapture speed;
+} AppCaptureStorage;
+
 /*
  * CCMRAM 不能被 DMA 访问，但记录与导出都由 CPU 逐样本复制，适合保存大容量高速缓冲。
  * 独立 NOLOAD 段不会占用主 SRAM 或 Flash；AppTasks_Create 会显式初始化全部控制字段。
+ * G2 电机与 G3_SPEED 记录器通过 union 互斥复用同一段，禁止同时保留两份 61.6 KB 数组。
  */
-static AppMotorCapture motor_capture
+static AppCaptureStorage capture_storage
   __attribute__((section(".motor_capture"), aligned(4)));
+static volatile AppCaptureMode capture_mode;
+
+#define APP_MOTOR_CAPTURE_STORAGE (&capture_storage.motor)
+#define APP_SPEED_CAPTURE_STORAGE (&capture_storage.speed)
+
+_Static_assert(sizeof(AppCaptureStorage) <= (64U * 1024U),
+               "capture union must fit in 64 KiB CCMRAM");
 /*
  * runtime_snapshot 的常规数据按字段组划分单一写入者，安全状态和 motion_gate 是经过
  * 明确定义的多写入者例外。短临界区只用于内存复制或最终失败标志更新，禁止在
@@ -122,8 +142,15 @@ typedef enum {
 } AppCaptureExportState;
 
 typedef struct {
-  AppMotorCaptureEvent event;
-  AppMotorCaptureStatus status;
+  AppCaptureMode mode;
+  union {
+    AppMotorCaptureEvent motor;
+    AppSpeedCaptureEvent speed;
+  } event;
+  union {
+    AppMotorCaptureStatus motor;
+    AppSpeedCaptureStatus speed;
+  } status;
 } AppCapturePendingEvent;
 
 typedef struct {
@@ -132,7 +159,7 @@ typedef struct {
   uint32_t count;
 } AppCaptureEventQueue;
 
-static bool AppTasks_CaptureEventPush(
+static bool AppTasks_MotorCaptureEventPush(
   AppCaptureEventQueue *queue,
   AppMotorCaptureEvent event,
   const AppMotorCaptureStatus *status)
@@ -143,8 +170,27 @@ static bool AppTasks_CaptureEventPush(
   }
   const uint32_t index =
     (queue->head + queue->count) % APP_CAPTURE_EVENT_QUEUE_DEPTH;
-  queue->entries[index].event = event;
-  queue->entries[index].status = *status;
+  queue->entries[index].mode = APP_CAPTURE_MODE_MOTOR;
+  queue->entries[index].event.motor = event;
+  queue->entries[index].status.motor = *status;
+  queue->count++;
+  return true;
+}
+
+static bool AppTasks_SpeedCaptureEventPush(
+  AppCaptureEventQueue *queue,
+  AppSpeedCaptureEvent event,
+  const AppSpeedCaptureStatus *status)
+{
+  if (queue == NULL || status == NULL ||
+      queue->count >= APP_CAPTURE_EVENT_QUEUE_DEPTH) {
+    return false;
+  }
+  const uint32_t index =
+    (queue->head + queue->count) % APP_CAPTURE_EVENT_QUEUE_DEPTH;
+  queue->entries[index].mode = APP_CAPTURE_MODE_SPEED;
+  queue->entries[index].event.speed = event;
+  queue->entries[index].status.speed = *status;
   queue->count++;
   return true;
 }
@@ -517,7 +563,8 @@ BspStatus AppTasks_Create(void)
 
   memset(task_handles, 0, sizeof(task_handles));
   memset(&runtime_snapshot, 0, sizeof(runtime_snapshot));
-  AppMotorCapture_Init(&motor_capture);
+  AppMotorCapture_Init(APP_MOTOR_CAPTURE_STORAGE);
+  capture_mode = APP_CAPTURE_MODE_MOTOR;
   runtime_snapshot.motion_inhibited = true;
   AppMotionGate_Init(&runtime_snapshot.motion_gate);
 
@@ -744,8 +791,46 @@ static void AppTasks_Control(void *argument)
         APP_MOTOR_CAPTURE_FLAG_CRITICAL_TASKS_ALIVE;
     }
     taskEXIT_CRITICAL();
-    if (!AppMotorCapture_Record(&motor_capture, &capture_input)) {
-      AppTasks_FailCurrentThread();
+    if (capture_mode == APP_CAPTURE_MODE_MOTOR) {
+      if (!AppMotorCapture_Record(
+            APP_MOTOR_CAPTURE_STORAGE, &capture_input)) {
+        AppTasks_FailCurrentThread();
+      }
+    } else {
+      const bool speed_was_recording =
+        capture_storage.speed.state == APP_SPEED_CAPTURE_RECORDING;
+      AppSpeedCaptureInput speed_input = {
+        .tick_sequence = tick.tick_sequence,
+        .irq_timestamp_cycles = tick.irq_timestamp_cycles,
+        .period_sum_cycles = tick.encoder_period_ma.period_sum_cycles,
+        .last_edge_age_cycles =
+          tick.encoder_period_ma.last_edge_age_cycles,
+        .event_sequence = tick.encoder_period_ma.event_sequence,
+        .encoder_delta_ma = encoder_delta[BSP_MOTOR_MA],
+        .applied_pwm = capture_input.applied_pwm,
+        .period_count = tick.encoder_period_ma.period_count,
+        .direction = tick.encoder_period_ma.direction,
+        .period_flags = tick.encoder_period_ma.flags,
+      };
+      if (!AppSpeedCapture_Record(
+            APP_SPEED_CAPTURE_STORAGE, &speed_input)) {
+        AppTasks_FailCurrentThread();
+      }
+      AppSpeedCaptureStatus speed_status;
+      if (!AppSpeedCapture_GetStatus(
+            APP_SPEED_CAPTURE_STORAGE, &speed_status)) {
+        AppTasks_FailCurrentThread();
+      }
+      if (speed_was_recording &&
+          speed_status.state == APP_SPEED_CAPTURE_COMPLETE) {
+        AppEncoderPeriodStats period_stats;
+        if (AppControlTimebase_StopMaPeriodCapture() != BSP_OK ||
+            !AppControlTimebase_GetMaPeriodStats(&period_stats) ||
+            !AppSpeedCapture_SetPeriodStats(
+              APP_SPEED_CAPTURE_STORAGE, &period_stats)) {
+          AppTasks_FailCurrentThread();
+        }
+      }
     }
 
     heartbeat_divider++;
@@ -846,6 +931,7 @@ static void AppTasks_Comm(void *argument)
   AppCaptureEventQueue capture_events;
   memset(&capture_events, 0, sizeof(capture_events));
   AppCaptureExportState capture_export_state = APP_CAPTURE_EXPORT_IDLE;
+  AppCaptureMode capture_export_mode = APP_CAPTURE_MODE_MOTOR;
   uint32_t capture_export_index = 0U;
 
   TickType_t last_wake = xTaskGetTickCount();
@@ -880,31 +966,49 @@ static void AppTasks_Comm(void *argument)
         taskENTER_CRITICAL();
         command_snapshot = runtime_snapshot;
         if (command.type == APP_COMM_COMMAND_CAPTURE_START) {
-          command_accepted =
-            capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
-            AppTasks_IsMotorStoppedForCapture(&command_snapshot) &&
-            AppMotorCapture_Start(&motor_capture);
+          if (capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
+              AppTasks_IsMotorStoppedForCapture(&command_snapshot) &&
+              (capture_mode != APP_CAPTURE_MODE_SPEED ||
+               capture_storage.speed.state != APP_SPEED_CAPTURE_RECORDING)) {
+            if (capture_mode != APP_CAPTURE_MODE_MOTOR) {
+              AppMotorCapture_Init(APP_MOTOR_CAPTURE_STORAGE);
+              capture_mode = APP_CAPTURE_MODE_MOTOR;
+            }
+            command_accepted =
+              AppMotorCapture_Start(APP_MOTOR_CAPTURE_STORAGE);
+          }
         } else if (command.type == APP_COMM_COMMAND_CAPTURE_STOP) {
           command_accepted =
             capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
-            AppMotorCapture_Stop(&motor_capture);
+            capture_mode == APP_CAPTURE_MODE_MOTOR &&
+            AppMotorCapture_Stop(APP_MOTOR_CAPTURE_STORAGE);
         } else if (command.type == APP_COMM_COMMAND_CAPTURE_EXPORT) {
           command_accepted =
             capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
+            capture_mode == APP_CAPTURE_MODE_MOTOR &&
             AppTasks_IsMotorStoppedForCapture(&command_snapshot) &&
-            AppMotorCapture_GetStatus(&motor_capture, &capture_status) &&
+            AppMotorCapture_GetStatus(
+              APP_MOTOR_CAPTURE_STORAGE, &capture_status) &&
             capture_status.state == APP_MOTOR_CAPTURE_COMPLETE &&
             capture_status.sample_count > 0U;
           if (command_accepted) {
             capture_export_state = APP_CAPTURE_EXPORT_BEGIN;
+            capture_export_mode = APP_CAPTURE_MODE_MOTOR;
             capture_export_index = 0U;
           }
         } else {
-          command_accepted = true;
+          command_accepted = capture_mode == APP_CAPTURE_MODE_MOTOR;
         }
-        if (!AppMotorCapture_GetStatus(&motor_capture, &capture_status)) {
-          taskEXIT_CRITICAL();
-          AppTasks_FailCurrentThread();
+        if (capture_mode == APP_CAPTURE_MODE_MOTOR) {
+          if (!AppMotorCapture_GetStatus(
+                APP_MOTOR_CAPTURE_STORAGE, &capture_status)) {
+            taskEXIT_CRITICAL();
+            AppTasks_FailCurrentThread();
+          }
+        } else {
+          memset(&capture_status, 0, sizeof(capture_status));
+          capture_status.state = APP_MOTOR_CAPTURE_IDLE;
+          capture_status.capacity = ROBOT_CONFIG_MOTOR_CAPTURE_CAPACITY;
         }
         taskEXIT_CRITICAL();
 
@@ -921,7 +1025,121 @@ static void AppTasks_Comm(void *argument)
           } else if (command.type == APP_COMM_COMMAND_CAPTURE_STOP) {
             event = APP_MOTOR_CAPTURE_EVENT_STOPPED;
           }
-          if (!AppTasks_CaptureEventPush(
+          if (!AppTasks_MotorCaptureEventPush(
+                &capture_events, event, &capture_status)) {
+            communication.capture_event_drop_count = AppTasks_AddSaturated(
+              communication.capture_event_drop_count, 1U);
+          }
+        }
+      } else if (command.type >= APP_COMM_COMMAND_SPEED_CAPTURE_START &&
+                 command.type <= APP_COMM_COMMAND_SPEED_CAPTURE_STATUS) {
+        AppRuntimeSnapshot command_snapshot;
+        AppSpeedCaptureStatus capture_status;
+        bool command_accepted = false;
+        taskENTER_CRITICAL();
+        command_snapshot = runtime_snapshot;
+        taskEXIT_CRITICAL();
+
+        if (command.type == APP_COMM_COMMAND_SPEED_CAPTURE_START) {
+          taskENTER_CRITICAL();
+          const bool can_start =
+            capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
+            AppTasks_IsMotorStoppedForCapture(&command_snapshot) &&
+            ((capture_mode == APP_CAPTURE_MODE_MOTOR &&
+              capture_storage.motor.state != APP_MOTOR_CAPTURE_RECORDING) ||
+             (capture_mode == APP_CAPTURE_MODE_SPEED &&
+              capture_storage.speed.state != APP_SPEED_CAPTURE_RECORDING));
+          if (can_start &&
+              AppControlTimebase_StartMaPeriodCapture() == BSP_OK) {
+            AppSpeedCapture_Init(APP_SPEED_CAPTURE_STORAGE);
+            command_accepted =
+              AppSpeedCapture_Start(APP_SPEED_CAPTURE_STORAGE);
+            if (command_accepted) {
+              capture_mode = APP_CAPTURE_MODE_SPEED;
+            }
+            if (!command_accepted) {
+              (void)AppControlTimebase_StopMaPeriodCapture();
+            }
+          }
+          taskEXIT_CRITICAL();
+        } else if (command.type == APP_COMM_COMMAND_SPEED_CAPTURE_STOP) {
+          taskENTER_CRITICAL();
+          const bool can_stop =
+            capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
+            capture_mode == APP_CAPTURE_MODE_SPEED &&
+            capture_storage.speed.state == APP_SPEED_CAPTURE_RECORDING;
+          if (can_stop &&
+              AppControlTimebase_StopMaPeriodCapture() == BSP_OK) {
+            AppEncoderPeriodStats period_stats;
+            if (!AppControlTimebase_GetMaPeriodStats(&period_stats)) {
+              AppTasks_FailCurrentThread();
+            }
+            command_accepted =
+              AppSpeedCapture_Stop(APP_SPEED_CAPTURE_STORAGE) &&
+              AppSpeedCapture_SetPeriodStats(
+                APP_SPEED_CAPTURE_STORAGE, &period_stats);
+          }
+          taskEXIT_CRITICAL();
+        } else {
+          AppEncoderPeriodStats period_stats;
+          if (!AppControlTimebase_GetMaPeriodStats(&period_stats)) {
+            AppTasks_FailCurrentThread();
+          }
+          taskENTER_CRITICAL();
+          if (capture_mode == APP_CAPTURE_MODE_SPEED) {
+            (void)AppSpeedCapture_SetPeriodStats(
+              APP_SPEED_CAPTURE_STORAGE, &period_stats);
+          }
+          if (command.type == APP_COMM_COMMAND_SPEED_CAPTURE_EXPORT) {
+            command_accepted =
+              capture_export_state == APP_CAPTURE_EXPORT_IDLE &&
+              capture_mode == APP_CAPTURE_MODE_SPEED &&
+              AppTasks_IsMotorStoppedForCapture(&command_snapshot) &&
+              AppSpeedCapture_GetStatus(
+                APP_SPEED_CAPTURE_STORAGE, &capture_status) &&
+              capture_status.state == APP_SPEED_CAPTURE_COMPLETE &&
+              capture_status.sample_count > 0U;
+            if (command_accepted) {
+              capture_export_state = APP_CAPTURE_EXPORT_BEGIN;
+              capture_export_mode = APP_CAPTURE_MODE_SPEED;
+              capture_export_index = 0U;
+            }
+          } else {
+            command_accepted = capture_mode == APP_CAPTURE_MODE_SPEED;
+          }
+          taskEXIT_CRITICAL();
+        }
+
+        taskENTER_CRITICAL();
+        if (capture_mode == APP_CAPTURE_MODE_SPEED) {
+          if (!AppSpeedCapture_GetStatus(
+                APP_SPEED_CAPTURE_STORAGE, &capture_status)) {
+            taskEXIT_CRITICAL();
+            AppTasks_FailCurrentThread();
+          }
+        } else {
+          memset(&capture_status, 0, sizeof(capture_status));
+          capture_status.state = APP_SPEED_CAPTURE_IDLE;
+          capture_status.capacity = ROBOT_CONFIG_SPEED_CAPTURE_CAPACITY;
+        }
+        taskEXIT_CRITICAL();
+
+        if (command.type != APP_COMM_COMMAND_SPEED_CAPTURE_EXPORT ||
+            !command_accepted) {
+          AppSpeedCaptureEvent event = APP_SPEED_CAPTURE_EVENT_STATUS;
+          if (!command_accepted) {
+            event = APP_SPEED_CAPTURE_EVENT_REJECTED;
+            communication.capture_command_reject_count =
+              AppTasks_AddSaturated(
+                communication.capture_command_reject_count, 1U);
+          } else if (
+            command.type == APP_COMM_COMMAND_SPEED_CAPTURE_START) {
+            event = APP_SPEED_CAPTURE_EVENT_STARTED;
+          } else if (
+            command.type == APP_COMM_COMMAND_SPEED_CAPTURE_STOP) {
+            event = APP_SPEED_CAPTURE_EVENT_STOPPED;
+          }
+          if (!AppTasks_SpeedCaptureEventPush(
                 &capture_events, event, &capture_status)) {
             communication.capture_event_drop_count = AppTasks_AddSaturated(
               communication.capture_event_drop_count, 1U);
@@ -939,18 +1157,37 @@ static void AppTasks_Comm(void *argument)
               communication.capture_command_reject_count, 1U);
           AppMotorCaptureStatus capture_status;
           taskENTER_CRITICAL();
-          const bool status_valid = AppMotorCapture_GetStatus(
-            &motor_capture, &capture_status);
+          const bool status_valid =
+            capture_mode == APP_CAPTURE_MODE_MOTOR &&
+            AppMotorCapture_GetStatus(
+              APP_MOTOR_CAPTURE_STORAGE, &capture_status);
           taskEXIT_CRITICAL();
-          if (!status_valid) {
-            AppTasks_FailCurrentThread();
-          }
-          if (!AppTasks_CaptureEventPush(
-                &capture_events,
-                APP_MOTOR_CAPTURE_EVENT_REJECTED,
-                &capture_status)) {
-            communication.capture_event_drop_count = AppTasks_AddSaturated(
-              communication.capture_event_drop_count, 1U);
+          if (status_valid) {
+            if (!AppTasks_MotorCaptureEventPush(
+                  &capture_events,
+                  APP_MOTOR_CAPTURE_EVENT_REJECTED,
+                  &capture_status)) {
+              communication.capture_event_drop_count = AppTasks_AddSaturated(
+                communication.capture_event_drop_count, 1U);
+            }
+          } else {
+            AppSpeedCaptureStatus speed_status;
+            taskENTER_CRITICAL();
+            const bool speed_status_valid =
+              capture_mode == APP_CAPTURE_MODE_SPEED &&
+              AppSpeedCapture_GetStatus(
+                APP_SPEED_CAPTURE_STORAGE, &speed_status);
+            taskEXIT_CRITICAL();
+            if (!speed_status_valid) {
+              AppTasks_FailCurrentThread();
+            }
+            if (!AppTasks_SpeedCaptureEventPush(
+                  &capture_events,
+                  APP_SPEED_CAPTURE_EVENT_REJECTED,
+                  &speed_status)) {
+              communication.capture_event_drop_count = AppTasks_AddSaturated(
+                communication.capture_event_drop_count, 1U);
+            }
           }
         } else {
           (void)AppTasks_QueueMotorCommand(
@@ -1035,55 +1272,111 @@ static void AppTasks_Comm(void *argument)
       AppCapturePendingEvent pending_event;
 
       if (AppTasks_CaptureEventPeek(&capture_events, &pending_event)) {
-        capture_frame_ready = AppMotorCapture_FormatEvent(
-          pending_event.event,
-          &pending_event.status,
-          telemetry_frame,
-          (uint16_t)sizeof(telemetry_frame),
-          &capture_frame_length);
-        capture_frame_is_event = true;
-      } else if (capture_export_state != APP_CAPTURE_EXPORT_IDLE) {
-        AppMotorCaptureStatus capture_status;
-        taskENTER_CRITICAL();
-        const bool status_valid = AppMotorCapture_GetStatus(
-          &motor_capture, &capture_status);
-        taskEXIT_CRITICAL();
-        if (!status_valid ||
-            capture_status.state != APP_MOTOR_CAPTURE_COMPLETE) {
-          AppTasks_FailCurrentThread();
-        }
-
-        if (capture_export_state == APP_CAPTURE_EXPORT_BEGIN) {
+        if (pending_event.mode == APP_CAPTURE_MODE_MOTOR) {
           capture_frame_ready = AppMotorCapture_FormatEvent(
-            APP_MOTOR_CAPTURE_EVENT_BEGIN,
-            &capture_status,
-            telemetry_frame,
-            (uint16_t)sizeof(telemetry_frame),
-            &capture_frame_length);
-        } else if (capture_export_state == APP_CAPTURE_EXPORT_SAMPLES &&
-                   capture_export_index < capture_status.sample_count) {
-          AppMotorCaptureSample sample;
-          taskENTER_CRITICAL();
-          const bool sample_valid = AppMotorCapture_GetSample(
-            &motor_capture, capture_export_index, &sample);
-          taskEXIT_CRITICAL();
-          if (!sample_valid) {
-            AppTasks_FailCurrentThread();
-          }
-          capture_frame_ready = AppMotorCapture_FormatSample(
-            capture_export_index,
-            &sample,
+            pending_event.event.motor,
+            &pending_event.status.motor,
             telemetry_frame,
             (uint16_t)sizeof(telemetry_frame),
             &capture_frame_length);
         } else {
-          capture_export_state = APP_CAPTURE_EXPORT_END;
-          capture_frame_ready = AppMotorCapture_FormatEvent(
-            APP_MOTOR_CAPTURE_EVENT_END,
-            &capture_status,
+          capture_frame_ready = AppSpeedCapture_FormatEvent(
+            pending_event.event.speed,
+            &pending_event.status.speed,
             telemetry_frame,
             (uint16_t)sizeof(telemetry_frame),
             &capture_frame_length);
+        }
+        capture_frame_is_event = true;
+      } else if (capture_export_state != APP_CAPTURE_EXPORT_IDLE) {
+        if (capture_export_mode == APP_CAPTURE_MODE_MOTOR) {
+          AppMotorCaptureStatus capture_status;
+          taskENTER_CRITICAL();
+          const bool status_valid = AppMotorCapture_GetStatus(
+            APP_MOTOR_CAPTURE_STORAGE, &capture_status);
+          taskEXIT_CRITICAL();
+          if (!status_valid ||
+              capture_status.state != APP_MOTOR_CAPTURE_COMPLETE) {
+            AppTasks_FailCurrentThread();
+          }
+
+          if (capture_export_state == APP_CAPTURE_EXPORT_BEGIN) {
+            capture_frame_ready = AppMotorCapture_FormatEvent(
+              APP_MOTOR_CAPTURE_EVENT_BEGIN,
+              &capture_status,
+              telemetry_frame,
+              (uint16_t)sizeof(telemetry_frame),
+              &capture_frame_length);
+          } else if (
+            capture_export_state == APP_CAPTURE_EXPORT_SAMPLES &&
+            capture_export_index < capture_status.sample_count) {
+            AppMotorCaptureSample sample;
+            taskENTER_CRITICAL();
+            const bool sample_valid = AppMotorCapture_GetSample(
+              APP_MOTOR_CAPTURE_STORAGE, capture_export_index, &sample);
+            taskEXIT_CRITICAL();
+            if (!sample_valid) {
+              AppTasks_FailCurrentThread();
+            }
+            capture_frame_ready = AppMotorCapture_FormatSample(
+              capture_export_index,
+              &sample,
+              telemetry_frame,
+              (uint16_t)sizeof(telemetry_frame),
+              &capture_frame_length);
+          } else {
+            capture_export_state = APP_CAPTURE_EXPORT_END;
+            capture_frame_ready = AppMotorCapture_FormatEvent(
+              APP_MOTOR_CAPTURE_EVENT_END,
+              &capture_status,
+              telemetry_frame,
+              (uint16_t)sizeof(telemetry_frame),
+              &capture_frame_length);
+          }
+        } else {
+          AppSpeedCaptureStatus capture_status;
+          taskENTER_CRITICAL();
+          const bool status_valid = AppSpeedCapture_GetStatus(
+            APP_SPEED_CAPTURE_STORAGE, &capture_status);
+          taskEXIT_CRITICAL();
+          if (!status_valid ||
+              capture_status.state != APP_SPEED_CAPTURE_COMPLETE) {
+            AppTasks_FailCurrentThread();
+          }
+
+          if (capture_export_state == APP_CAPTURE_EXPORT_BEGIN) {
+            capture_frame_ready = AppSpeedCapture_FormatEvent(
+              APP_SPEED_CAPTURE_EVENT_BEGIN,
+              &capture_status,
+              telemetry_frame,
+              (uint16_t)sizeof(telemetry_frame),
+              &capture_frame_length);
+          } else if (
+            capture_export_state == APP_CAPTURE_EXPORT_SAMPLES &&
+            capture_export_index < capture_status.sample_count) {
+            AppSpeedCaptureSample sample;
+            taskENTER_CRITICAL();
+            const bool sample_valid = AppSpeedCapture_GetSample(
+              APP_SPEED_CAPTURE_STORAGE, capture_export_index, &sample);
+            taskEXIT_CRITICAL();
+            if (!sample_valid) {
+              AppTasks_FailCurrentThread();
+            }
+            capture_frame_ready = AppSpeedCapture_FormatSample(
+              capture_export_index,
+              &sample,
+              telemetry_frame,
+              (uint16_t)sizeof(telemetry_frame),
+              &capture_frame_length);
+          } else {
+            capture_export_state = APP_CAPTURE_EXPORT_END;
+            capture_frame_ready = AppSpeedCapture_FormatEvent(
+              APP_SPEED_CAPTURE_EVENT_END,
+              &capture_status,
+              telemetry_frame,
+              (uint16_t)sizeof(telemetry_frame),
+              &capture_frame_length);
+          }
         }
       }
 

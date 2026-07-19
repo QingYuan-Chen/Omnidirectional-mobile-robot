@@ -60,6 +60,13 @@ bool AppEncoderPeriodAccumulator_OnEdge(
   int8_t direction);
 
 /*
+ * 硬件输入捕获 overcapture 等外部证据表明至少一个边沿未被软件服务时调用。
+ * 当前未快照聚合立即作废并累计错误，禁止把跨越丢事件的长周期继续交给 T 法。
+ */
+void AppEncoderPeriodAccumulator_MarkAggregateDropped(
+  AppEncoderPeriodAccumulator *accumulator);
+
+/*
  * 复制当前聚合并清空“本控制周期”的 period_sum/period_count/事件标志。
  * 最后边沿、方向、事件序号和累计统计保留，供后续年龄与陈旧判断使用。
  */

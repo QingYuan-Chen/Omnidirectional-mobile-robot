@@ -60,6 +60,14 @@ if(WIN32)
       -ExecutionPolicy Bypass
       -File "${CMAKE_CURRENT_LIST_DIR}/test_g2_high_pwm_validation.ps1"
   )
+  add_test(
+    NAME g3_speed_capture_analysis
+    COMMAND
+      "${POWERSHELL_EXECUTABLE}"
+      -NoProfile
+      -ExecutionPolicy Bypass
+      -File "${CMAKE_CURRENT_LIST_DIR}/test_g3_speed_capture_analysis.ps1"
+  )
 endif()
 
 add_executable(test_app_debug_uart_config
@@ -134,6 +142,14 @@ add_executable(test_app_motor_capture
 target_include_directories(test_app_motor_capture PRIVATE "${APP_DIR}/Inc")
 target_compile_options(test_app_motor_capture PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
 add_test(NAME app_motor_capture COMMAND test_app_motor_capture)
+
+add_executable(test_app_speed_capture
+  test_app_speed_capture.c
+  "${APP_DIR}/Src/app_speed_capture.c"
+)
+target_include_directories(test_app_speed_capture PRIVATE "${APP_DIR}/Inc")
+target_compile_options(test_app_speed_capture PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME app_speed_capture COMMAND test_app_speed_capture)
 
 add_executable(test_app_motion_gate
   test_app_motion_gate.c

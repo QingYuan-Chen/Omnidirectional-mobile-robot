@@ -227,8 +227,11 @@ rpm_T = direction * 60 * timestamp_clock_hz
 
 - `[已完成]` `AppEncoderPeriodAccumulator`：DWT 32 位回绕、首边沿基线、同向周期聚合、事件序号、最后边沿年龄、换向清空、零周期与聚合溢出诊断。
 - `[已完成]` `AppWheelSpeedEstimator`：最大 50 tick 的可配置滑动 M 法、真实周期 T 法、T 陈旧/方向一致性门和带双阈值滞回的硬切换。
-- `[已验证]` 新增两项 host 测试并纳入统一入口，23/23 通过；ARM Debug 固件构建通过，RAM 47,120 B、CCMRAM 61,612 B、Flash 89,936 B。
-- `[边界]` 新模块尚未被现有控制任务调用，不改变板上运行行为；M/T 阈值仍是测试可配置候选，不能写成最终控制参数。
+- `[已完成]` 新增与 G2 电机采集互斥的 28 B `SC/SCAP` schema、`CAPTURE SPEED START/STOP/STATUS/EXPORT`、TIM7 对齐周期快照和 Windows 独立 CSV/严格解析。
+- `[已完成]` TIM2 CC1 IRQ 只在速度记录期间运行，优先级 6 低于 TIM7 的 5；IRQ 不调用 RTOS/HAL 分派/格式化，`.ioc` 不增加常驻中断配置。
+- `[已完成]` 无动力手转分析器同时核对编码器净计数、事件序号、周期数、方向、错误标志和 10 ms M/T 输出；候选 30720 events/rev 必须由实测决定。
+- `[已验证]` 统一 host 25/25、G3 专项 PowerShell 7/5.1 各 13 项、ARM Debug/Release 和六文件严格告警/静态分析通过。资源为 RAM 47,424 B、CCMRAM 61,628 B、Flash 96,172/53,552 B。TIM2 `CC1OF` 会使当前周期聚合和边沿基线失效，并由 `aggregate_drop_count` 进入拒绝门。
+- `[边界]` 新镜像尚未刷板；M/T 阈值仍是测试可配置候选，CC1 真实边沿语义、IRQ 负担、T 法精度和最终控制参数均未关闭。
 
 ## 下一软件切片
 
@@ -237,5 +240,6 @@ rpm_T = direction * 60 * timestamp_clock_hz
 1. `[已完成]` 实现并测试 `g2_high_pwm_steady_validation` 计划生成器、严格分析入口和双窗口批次汇总；
 2. `[提交后生成，不执行]` 生成绑定本切片仓库提交的 `±840` 六计划未授权批次；
 3. `[纯算法已完成]` 完成边沿聚合和 host 端 M/T 估计器测试；
-4. `[下一独立切片]` 实现与电机 schema 互斥的 MA `G3_SPEED` 诊断缓冲、命令和导出链，并接入受控启停的 TIM2 CC1 边沿事件；
-5. `[待板测]` 完成无动力手转事件计数与时序门后，再通知操作者是否需要连接电机动力。
+4. `[已完成]` 实现互斥 MA `G3_SPEED` 缓冲、命令、导出、Windows 解析/分析和受控 TIM2 CC1 边沿事件；
+5. `[下一步，需上板但不需电机动力]` 刷入本切片固件，独立纯 `STATUS` 后精确单向手转一圈，验证真实 events/rev、encoder counts/event、方向、错误计数和控制时序；
+6. `[待上述门通过]` 再评审是否连接电机动力做同运行 M/T 速度段比较；当前不得执行 `±840` 或其他新运动。

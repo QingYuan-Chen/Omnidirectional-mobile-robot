@@ -20,6 +20,10 @@
 _Static_assert(
   ROBOT_CONFIG_CONTROL_TIMER_IRQ_PRIORITY >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY,
   "TIM7 interrupt priority may not call FreeRTOS FromISR APIs");
+_Static_assert(
+  ROBOT_CONFIG_G3_SPEED_TIMER_IRQ_PRIORITY >
+    ROBOT_CONFIG_CONTROL_TIMER_IRQ_PRIORITY,
+  "G3 speed edge IRQ must not preempt the TIM7 control tick");
 
 static AppControlTickBuffer tick_buffer;
 /*
@@ -35,6 +39,8 @@ static uint32_t expected_period_cycles;
 static uint32_t timer_irq_missed_period_count;
 static uint64_t elapsed_cycles_since_start;
 static uint64_t serviced_irq_count;
+static AppEncoderPeriodAccumulator ma_period_accumulator;
+static volatile bool ma_period_capture_started;
 
 static void AppControlTimebase_ResetState(void)
 {
@@ -45,6 +51,8 @@ static void AppControlTimebase_ResetState(void)
   timer_irq_missed_period_count = 0U;
   elapsed_cycles_since_start = 0U;
   serviced_irq_count = 0U;
+  AppEncoderPeriodAccumulator_Init(&ma_period_accumulator);
+  ma_period_capture_started = false;
 }
 
 static bool AppControlTimebase_ConfigurationMatches(void)
@@ -136,6 +144,7 @@ BspStatus AppControlTimebase_Start(void)
 
 BspStatus AppControlTimebase_Stop(void)
 {
+  (void)AppControlTimebase_StopMaPeriodCapture();
   taskENTER_CRITICAL();
   const bool was_started = timebase_started;
   timebase_started = false;
@@ -177,6 +186,7 @@ BspStatus AppControlTimebase_Wait(AppControlTick *tick)
   tick->timer_irq_missed_period_count = sample.timer_irq_missed_period_count;
   tick->task_wake_cycles = wake_cycles;
   tick->notification_count = notification_count;
+  tick->encoder_period_ma = sample.encoder_period_ma;
   for (uint32_t i = 0U; i < (uint32_t)BSP_MOTOR_COUNT; ++i) {
     tick->encoder_raw[i] = sample.encoder_raw[i];
   }
@@ -186,6 +196,86 @@ BspStatus AppControlTimebase_Wait(AppControlTick *tick)
 uint32_t AppControlTimebase_GetCycleCount(void)
 {
   return DWT->CYCCNT;
+}
+
+BspStatus AppControlTimebase_StartMaPeriodCapture(void)
+{
+  if (!timebase_started ||
+      (DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk) == 0U ||
+      htim2.Instance != TIM2) {
+    return BSP_ERROR;
+  }
+
+  taskENTER_CRITICAL();
+  if (ma_period_capture_started) {
+    taskEXIT_CRITICAL();
+    return BSP_BUSY;
+  }
+  AppEncoderPeriodAccumulator_Init(&ma_period_accumulator);
+  __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_CC1);
+  __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC1 | TIM_FLAG_CC1OF);
+  HAL_NVIC_ClearPendingIRQ(TIM2_IRQn);
+  HAL_NVIC_SetPriority(
+    TIM2_IRQn, ROBOT_CONFIG_G3_SPEED_TIMER_IRQ_PRIORITY, 0U);
+  ma_period_capture_started = true;
+  __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_CC1);
+  HAL_NVIC_EnableIRQ(TIM2_IRQn);
+  taskEXIT_CRITICAL();
+  if (NVIC_GetPriority(TIM2_IRQn) !=
+      ROBOT_CONFIG_G3_SPEED_TIMER_IRQ_PRIORITY) {
+    (void)AppControlTimebase_StopMaPeriodCapture();
+    return BSP_ERROR;
+  }
+  return BSP_OK;
+}
+
+BspStatus AppControlTimebase_StopMaPeriodCapture(void)
+{
+  taskENTER_CRITICAL();
+  __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_CC1);
+  HAL_NVIC_DisableIRQ(TIM2_IRQn);
+  HAL_NVIC_ClearPendingIRQ(TIM2_IRQn);
+  __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC1 | TIM_FLAG_CC1OF);
+  ma_period_capture_started = false;
+  taskEXIT_CRITICAL();
+  return BSP_OK;
+}
+
+bool AppControlTimebase_GetMaPeriodStats(AppEncoderPeriodStats *stats)
+{
+  if (stats == NULL) {
+    return false;
+  }
+  taskENTER_CRITICAL();
+  const bool result = AppEncoderPeriodAccumulator_GetStats(
+    &ma_period_accumulator, stats);
+  taskEXIT_CRITICAL();
+  return result;
+}
+
+void AppControlTimebase_OnMaEncoderIrqFromIsr(void)
+{
+  const bool overcapture =
+    __HAL_TIM_GET_FLAG(&htim2, TIM_FLAG_CC1OF) != RESET;
+  if (overcapture) {
+    __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC1OF);
+    if (ma_period_capture_started) {
+      AppEncoderPeriodAccumulator_MarkAggregateDropped(
+        &ma_period_accumulator);
+    }
+  }
+  if (__HAL_TIM_GET_FLAG(&htim2, TIM_FLAG_CC1) == RESET ||
+      __HAL_TIM_GET_IT_SOURCE(&htim2, TIM_IT_CC1) == RESET) {
+    return;
+  }
+  __HAL_TIM_CLEAR_IT(&htim2, TIM_IT_CC1);
+  if (!ma_period_capture_started) {
+    return;
+  }
+  const int8_t direction =
+    __HAL_TIM_IS_TIM_COUNTING_DOWN(&htim2) ? -1 : 1;
+  (void)AppEncoderPeriodAccumulator_OnEdge(
+    &ma_period_accumulator, DWT->CYCCNT, direction);
 }
 
 void AppControlTimebase_OnTimerElapsedFromIsr(void)
@@ -219,11 +309,17 @@ void AppControlTimebase_OnTimerElapsedFromIsr(void)
   for (uint32_t i = 0U; i < (uint32_t)BSP_MOTOR_COUNT; ++i) {
     encoder_raw[i] = BspEncoder_ReadRaw((BspMotorId)i);
   }
+  AppEncoderPeriodSnapshot encoder_period_ma = {0};
+  if (ma_period_capture_started) {
+    (void)AppEncoderPeriodAccumulator_Snapshot(
+      &ma_period_accumulator, now_cycles, &encoder_period_ma);
+  }
   AppControlTickBuffer_PublishFromIsr(
     &tick_buffer,
     now_cycles,
     irq_period_cycles,
     timer_irq_missed_period_count,
+    &encoder_period_ma,
     encoder_raw);
   previous_irq_timestamp_cycles = now_cycles;
 

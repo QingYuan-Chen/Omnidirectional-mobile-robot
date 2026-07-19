@@ -1,6 +1,7 @@
 #ifndef APP_CONTROL_TICK_BUFFER_H
 #define APP_CONTROL_TICK_BUFFER_H
 
+#include "app_encoder_period_accumulator.h"
 #include "bsp_types.h"
 #include "robot_config.h"
 
@@ -30,6 +31,7 @@ typedef struct {
   uint32_t irq_timestamp_cycles;
   uint32_t irq_period_cycles;
   uint32_t timer_irq_missed_period_count;
+  AppEncoderPeriodSnapshot encoder_period_ma;
   uint16_t encoder_raw[BSP_MOTOR_COUNT];
 } AppControlTickSample;
 
@@ -56,6 +58,7 @@ void AppControlTickBuffer_PublishFromIsr(
   uint32_t irq_timestamp_cycles,
   uint32_t irq_period_cycles,
   uint32_t timer_irq_missed_period_count,
+  const AppEncoderPeriodSnapshot *encoder_period_ma,
   const uint16_t encoder_raw[BSP_MOTOR_COUNT]);
 /*
  * 控制任务按本次取得的 notification_count 消费目标序号。

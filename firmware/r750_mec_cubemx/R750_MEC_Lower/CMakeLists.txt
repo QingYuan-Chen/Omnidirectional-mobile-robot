@@ -55,6 +55,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/app_motor_open_loop.c
     App/Src/app_motion_gate.c
     App/Src/app_safety_policy.c
+    App/Src/app_speed_capture.c
     App/Src/app_telemetry.c
     App/Src/app_wheel_speed_estimator.c
     App/Src/app_imu.c

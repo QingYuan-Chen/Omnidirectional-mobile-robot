@@ -455,3 +455,12 @@
 - 当前只关闭纯算法和契约测试，不把候选阈值写成最终参数，也没有把 1 ms 计数插值包装成 T 法。TIM2 CC1 IRQ、互斥 `G3_SPEED` 缓冲/导出 schema、主机解析和真实边沿板测仍未接入。
 - 统一主机测试由 21 项扩展为 23 项并 23/23 通过；新增测试覆盖 DWT 回绕、快照清空、换向、零周期、聚合溢出、M 窗口量化、T 更新/保持/陈旧回退及 M/T 滞回。ARM Debug 固件构建通过，资源为 RAM 47,120 B、CCMRAM 61,612 B、Flash 89,936 B；本切片未改变现有运行路径或 `.ioc`。
 - 当前仍在原十阶段第 7 阶段，动力保持断开；没有打开 COM6、没有刷板或发送命令。下一独立切片是接入 MA `G3_SPEED` 诊断 schema，完成后先做无动力手转与控制时序门，再决定何时需要电机动力。
+
+## 2026-07-19：完成 G3_SPEED 互斥诊断软件链
+
+- 新增固定 28 B 的 `AppSpeedCaptureSample`，每个 TIM7 tick 同步保存 `encoder_delta_ma`、实际 PWM、TIM2 CC1 周期和事件数、最后边沿年龄、事件序号、方向与错误标志。G2 `MC/MCAP` 与 G3 `SC/SCAP` 通过 union 互斥复用同一块 CCMRAM，容量均为 2200 样本，不同时分配两份大数组。
+- 临时 ASCII 协议新增显式 `CAPTURE SPEED START/STOP/STATUS/EXPORT`。速度记录只在 START 到 STOP/满缓冲期间运行 TIM2 CC1 IRQ；IRQ 数值优先级为 6，低于 TIM7 的 5，不调用 HAL 分派、RTOS 或格式化。TIM7 ISR 抢占并原子快照周期聚合，避免把 tick 后边沿错放到当前样本；普通电机采集期间 TIM2 IRQ 保持关闭，`.ioc` 未修改。
+- Windows 采集器新增 `speed_capture.csv`、`speed_capture_events.csv` 及独立解析错误计数。离线分析器检查索引/tick 连续、PWM 必须为 0、聚合/方向错误、事件序号、编码器计数与候选 30720 events/rev，并在同一数据上报告 10 ms M 法与周期 T 法；任何分析始终保持 `model_ready=false`。
+- 新增默认未授权的无动力手转一圈计划生成器。计划要求提交后干净仓库、电机动力断开、独立纯 `STATUS`、精确单向一圈且禁止越过后反向修正；最终计划只在本切片提交后生成，使仓库和待刷固件提交一致。
+- 统一主机测试 25/25 通过；G3 分析专项在 PowerShell 7/5.1 下均为 13 项断言，串口解析在 Windows PowerShell 5.1 下为 34 项断言，36 个 PowerShell 脚本解析错误为 0。五个关键 C 文件通过 `-Wextra -Wshadow -Wconversion -Werror -fanalyzer`。
+- ARM Debug/Release 均构建通过：RAM 47,424 B，CCMRAM 61,628 B；Flash 分别 96,172/53,552 B。当前仍未刷板、未打开 COM6、未发送命令，电机动力继续断开；下一步需要连接主控和 ST-Link/USB-COM，但仍不需要电机动力。
