@@ -58,6 +58,12 @@ _Static_assert(ROBOT_CONFIG_MOTOR_COMMAND_QUEUE_DEPTH > 0U,
                "motor command queue depth must be non-zero");
 _Static_assert(ROBOT_CONFIG_TELEMETRY_PERIOD_MS > 0U,
                "telemetry period must be non-zero");
+_Static_assert(ROBOT_CONFIG_IMUQ_TELEMETRY_PERIOD_MS > 0U,
+               "IMUQ telemetry period must be non-zero");
+_Static_assert(ROBOT_CONFIG_RES_TELEMETRY_PERIOD_MS > 0U,
+               "RES telemetry period must be non-zero");
+_Static_assert(ROBOT_CONFIG_EVENT_TELEMETRY_MIN_PERIOD_MS > 0U,
+               "EVENT telemetry minimum period must be non-zero");
 _Static_assert(ROBOT_CONFIG_UART_TX_CAPTURE_RESERVED_SLOTS > 0U,
                "capture export must reserve at least one UART TX slot");
 _Static_assert(
@@ -426,6 +432,8 @@ static void AppTasks_FillTelemetryInput(
   input->battery_millivolts = snapshot->battery_millivolts;
   input->imu_sample_age_ms = snapshot->imu.sample_age_ms;
   input->imu_health = snapshot->imu.health;
+  input->imu = snapshot->imu;
+  input->uart = snapshot->communication.debug_uart;
   input->uart_error_count = AppTasks_SumUartErrors(
     &snapshot->communication.debug_uart);
   input->uart_rx_overflow_count =
@@ -441,6 +449,26 @@ static void AppTasks_FillTelemetryInput(
   input->invalidated_motor_command_count =
     snapshot->invalidated_motor_command_count;
   input->adc_error_count = snapshot->communication.adc_error_count;
+  input->telemetry_enqueued_count =
+    snapshot->communication.telemetry_enqueued_count;
+  input->telemetry_enqueue_drop_count =
+    snapshot->communication.telemetry_enqueue_drop_count;
+  input->telemetry_format_error_count =
+    snapshot->communication.telemetry_format_error_count;
+  memcpy(
+    input->telemetry_frame_failure_count,
+    snapshot->communication.telemetry_frame_failure_count,
+    sizeof(input->telemetry_frame_failure_count));
+  input->capture_event_drop_count =
+    snapshot->communication.capture_event_drop_count;
+  input->capture_export_error_count =
+    snapshot->communication.capture_export_error_count;
+  input->health_miss_count = snapshot->health_miss_count;
+  memcpy(
+    input->stack_free_bytes,
+    snapshot->stack_free_bytes,
+    sizeof(input->stack_free_bytes));
+  input->minimum_free_heap_bytes = snapshot->minimum_free_heap_bytes;
   input->critical_tasks_alive = snapshot->critical_tasks_alive;
   input->runtime_ready = snapshot->runtime_ready;
   input->motion_inhibited = snapshot->motion_inhibited;
@@ -923,7 +951,8 @@ static void AppTasks_Comm(void *argument)
   const BspUartPort debug_uart_port = ROBOT_CONFIG_DEBUG_UART_PORT;
   AppCommRuntimeSnapshot communication;
   memset(&communication, 0, sizeof(communication));
-  uint32_t last_telemetry_ms = HAL_GetTick() - ROBOT_CONFIG_TELEMETRY_PERIOD_MS;
+  AppTelemetrySchedule telemetry_schedule;
+  AppTelemetrySchedule_Init(&telemetry_schedule, HAL_GetTick());
   bool force_telemetry = false;
   static AppRuntimeSnapshot telemetry_snapshot;
   static AppTelemetryInput telemetry_input;
@@ -1197,14 +1226,22 @@ static void AppTasks_Comm(void *argument)
     }
 
     const uint32_t now_ms = HAL_GetTick();
-    const bool periodic_telemetry_due =
-      (now_ms - last_telemetry_ms) >= ROBOT_CONFIG_TELEMETRY_PERIOD_MS;
-    if (periodic_telemetry_due) {
+    const bool periodic_stat_due =
+      (now_ms - telemetry_schedule.last_stat_ms) >=
+        ROBOT_CONFIG_TELEMETRY_PERIOD_MS;
+    AppTelemetryFrameType telemetry_frame_type;
+    bool telemetry_due = AppTelemetrySchedule_Select(
+      &telemetry_schedule,
+      now_ms,
+      force_telemetry,
+      &telemetry_frame_type);
+    if (telemetry_due &&
+        telemetry_frame_type == APP_TELEMETRY_FRAME_STAT &&
+        periodic_stat_due) {
       /*
        * ADC 是轮询式独占资源，只绑定周期遥测节拍以限制执行时间与采样负载。STATUS 强制
        * 遥测不会额外触发 ADC，避免命令洪泛把通信任务变成连续阻塞采样。
        */
-      last_telemetry_ms = now_ms;
       uint16_t battery_millivolts = 0U;
       const BspStatus battery_status = BspAdc_ReadBatteryMillivolts(
         &battery_millivolts);
@@ -1219,12 +1256,12 @@ static void AppTasks_Comm(void *argument)
       }
     }
 
-    if (periodic_telemetry_due || force_telemetry) {
+    if (telemetry_due) {
       /*
        * 先在短临界区复制完整运行快照，再在临界区外构造和格式化帧。发送接口复制帧内容，
-       * 因此静态 telemetry_frame 在成功入队后可由下一周期安全复用。
+       * 因此静态 telemetry_frame 在成功入队后可由下一周期安全复用。更新 EVENT 后重新
+       * 选择一次，保证本循环新发现的状态跃迁优先于普通周期帧；每个循环仍最多入队一帧。
        */
-      force_telemetry = false;
       (void)AppCommProtocol_GetStats(&protocol, &communication.protocol);
       (void)BspUart_GetStats(debug_uart_port, &communication.debug_uart);
 
@@ -1235,26 +1272,56 @@ static void AppTasks_Comm(void *argument)
 
       AppTasks_FillTelemetryInput(
         &telemetry_snapshot, now_ms, &telemetry_input);
+      AppTelemetrySchedule_UpdateEvents(
+        &telemetry_schedule, &telemetry_input);
+      telemetry_due = AppTelemetrySchedule_Select(
+        &telemetry_schedule,
+        now_ms,
+        force_telemetry,
+        &telemetry_frame_type);
+      if (!telemetry_due) {
+        AppTasks_FailCurrentThread();
+      }
       uint16_t telemetry_length = 0U;
-      if (!AppTelemetry_Format(
+      bool telemetry_enqueued = false;
+      if (!AppTelemetry_FormatTyped(
+            telemetry_frame_type,
+            &telemetry_schedule,
             &telemetry_input,
             telemetry_frame,
             (uint16_t)sizeof(telemetry_frame),
             &telemetry_length)) {
         communication.telemetry_format_error_count = AppTasks_AddSaturated(
           communication.telemetry_format_error_count, 1U);
+        communication.telemetry_frame_failure_count[telemetry_frame_type] =
+          AppTasks_AddSaturated(
+            communication.telemetry_frame_failure_count[telemetry_frame_type],
+            1U);
       } else if (BspUart_WriteAsync(
                    debug_uart_port, telemetry_frame, telemetry_length) != BSP_OK) {
         communication.telemetry_enqueue_drop_count = AppTasks_AddSaturated(
           communication.telemetry_enqueue_drop_count, 1U);
+        communication.telemetry_frame_failure_count[telemetry_frame_type] =
+          AppTasks_AddSaturated(
+            communication.telemetry_frame_failure_count[telemetry_frame_type],
+            1U);
       } else {
         communication.telemetry_enqueued_count = AppTasks_AddSaturated(
           communication.telemetry_enqueued_count, 1U);
+        telemetry_enqueued = true;
+      }
+      AppTelemetrySchedule_MarkAttempt(
+        &telemetry_schedule,
+        telemetry_frame_type,
+        now_ms,
+        telemetry_enqueued);
+      if (telemetry_frame_type == APP_TELEMETRY_FRAME_STAT) {
+        force_telemetry = false;
       }
     }
 
     /*
-     * 每个通信周期最多追加一帧高速采集数据。高速导出必须为下一次 50 Hz 状态遥测
+     * 每个通信周期最多追加一帧高速采集数据。高速导出必须为下一次分类型诊断遥测
      * 预留一个槽位，否则导出可在两个通信周期之间填满队列，使随后到期的遥测调用
      * WriteAsync 并增加 queue_full。队列达到导出上限时保持当前索引稍后重试；事件优先
      * 于批量样本，BEGIN/END 和样本都使用同一异步发送链，期间仍解析 ESTOP 与普通命令。
@@ -1475,8 +1542,8 @@ static void AppTasks_Monitor(void *argument)
   TickType_t last_wake = xTaskGetTickCount();
   for (;;) {
     /*
-     * 栈余量是 CMSIS-RTOS 报告的历史最小剩余字节，用于板测确认静态栈预算；LED1 翻转只
-     * 表示低优先级监控任务仍得到调度，不参与关键心跳或安全判定。
+     * 栈余量是 CMSIS-RTOS 报告的历史最小剩余字节；heap_4 同时提供本次上电最小剩余堆。
+     * 两者只建立 RES 可观测性，仍需阶段 5 板测才可验收；LED1 不参与安全判定。
      */
     uint32_t stack_free_bytes[APP_TASK_COUNT];
     for (uint32_t i = 0U; i < APP_TASK_COUNT; ++i) {
@@ -1485,6 +1552,8 @@ static void AppTasks_Monitor(void *argument)
 
     taskENTER_CRITICAL();
     memcpy(runtime_snapshot.stack_free_bytes, stack_free_bytes, sizeof(stack_free_bytes));
+    runtime_snapshot.minimum_free_heap_bytes =
+      (uint32_t)xPortGetMinimumEverFreeHeapSize();
     taskEXIT_CRITICAL();
 
     HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);

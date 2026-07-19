@@ -38,6 +38,20 @@ if ($metadata.outcome -cne 'completed') {
 $telemetry = @(Import-Csv -LiteralPath $telemetryPath)
 $commands = @(Import-Csv -LiteralPath $commandsPath)
 $rawBytes = [uint64](Get-Item -LiteralPath $rawPath).Length
+$additionalTypedRows = [uint64]0
+$typedParseErrors = [uint64]0
+foreach ($name in @('imuq_rows', 'resource_rows', 'event_rows')) {
+    if ($null -ne $metadata.counts.PSObject.Properties[$name]) {
+        $additionalTypedRows += [uint64]$metadata.counts.$name
+    }
+}
+foreach ($name in @(
+    'stat_parse_errors', 'imuq_parse_errors',
+    'resource_parse_errors', 'event_parse_errors')) {
+    if ($null -ne $metadata.counts.PSObject.Properties[$name]) {
+        $typedParseErrors += [uint64]$metadata.counts.$name
+    }
+}
 
 $consistency = [ordered]@{
     raw_bytes_match = ($rawBytes -eq [uint64]$metadata.counts.raw_bytes)
@@ -46,8 +60,11 @@ $consistency = [ordered]@{
     complete_line_partition_match =
         ([uint64]$metadata.counts.complete_lines -eq
          ([uint64]$metadata.counts.telemetry_rows +
+          $additionalTypedRows +
           [uint64]$metadata.counts.non_telemetry_lines))
-    parse_errors_zero = ([uint64]$metadata.counts.telemetry_parse_errors -eq 0)
+    parse_errors_zero =
+        ([uint64]$metadata.counts.telemetry_parse_errors -eq 0 -and
+         $typedParseErrors -eq 0)
 }
 if (@($consistency.Values | Where-Object { -not $_ }).Count -gt 0) {
     throw '采集产物计数不一致或包含解析异常，拒绝生成 G2 摘要'

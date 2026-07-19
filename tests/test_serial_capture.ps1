@@ -45,6 +45,53 @@ Assert-True ($parsed.encoder_total_3 -eq [int64]::MaxValue) '解析 int64 上界
 Assert-True ($parsed.target_pwm -eq -840 -and $parsed.applied_pwm -eq 840) '解析有符号 PWM'
 Assert-True ((Get-AppTelemetryColumnNames).Count -eq 40) 'CSV 遥测列数量固定'
 
+$statLine = 'STAT,1,' + $validLine.Substring(2)
+$stat = ConvertFrom-AppStatLine -Line $statLine
+Assert-True ($stat.board_now_ms -eq 178946 -and
+             $stat.applied_pwm -eq 840) 'schema 1 STAT 生成旧 40 列兼容视图'
+Assert-Throws {
+    ConvertFrom-AppStatLine -Line ($statLine -replace '^STAT,1,', 'STAT,2,')
+} '拒绝未知 STAT schema'
+Assert-Throws {
+    ConvertFrom-AppStatLine -Line ($statLine -replace ',S,1,1,0,0,0,0,', ',S,1,1,0,0,7,0,')
+} '拒绝 STAT 未知电机状态'
+Assert-Throws {
+    ConvertFrom-AppStatLine -Line ($statLine -replace ',I,0,1,', ',I,0,6,')
+} '拒绝 STAT 未知 IMU 健康状态'
+Assert-Throws {
+    ConvertFrom-AppStatLine -Line ($statLine -replace ',P,-840,840,', ',P,40000,840,')
+} '拒绝 STAT 超出 int16 的 PWM'
+
+$imuqLine = 'IMUQ,1,100,Q,1,2,3,1,7,R,4,5,6,7,8,9,A,10,11,12,13,14,15'
+$imuq = ConvertFrom-AppImuqLine -Line $imuqLine
+Assert-True ($imuq.imu_sequence -eq 1 -and
+             $imuq.estimator_fault_count -eq 15) '解析 IMUQ 质量计数'
+Assert-True ((Get-AppImuqColumnNames).Count -eq 19) 'IMUQ CSV 列数量固定'
+Assert-Throws {
+    ConvertFrom-AppImuqLine -Line ($imuqLine -replace ',Q,', ',X,')
+} '拒绝 IMUQ 错误标签'
+
+$resourceLine = 'RES,1,100,T,1,2,3,4,5,6,7,8,9,10,S,11,12,13,14,15,16,H,17,U,4,18,19,20,21,22,23,24,25,26,27,28,29,F,30,31,32,33'
+$resource = ConvertFrom-AppResourceLine -Line $resourceLine
+Assert-True ($resource.control_stack_free_bytes -eq 11 -and
+             $resource.minimum_free_heap_bytes -eq 16 -and
+             $resource.adc_error_count -eq 29 -and
+             $resource.event_frame_failure_count -eq 33) '解析 RES 资源水位与分类型失败计数'
+Assert-True ((Get-AppResourceColumnNames).Count -eq 36) 'RES CSV 列数量固定'
+Assert-Throws {
+    ConvertFrom-AppResourceLine -Line ($resourceLine -replace ',U,4,', ',U,5,')
+} '拒绝 RES 非法 UART 队列深度'
+
+$eventLine = 'EVENT,1,100,2,3,S,1,0,0,2,0,1,C,4,5,6,7,8'
+$event = ConvertFrom-AppEventLine -Line $eventLine
+Assert-True ($event.event_sequence -eq 2 -and
+             $event.event_flags -eq 3 -and
+             $event.motor_state -eq 2) '解析 EVENT 位掩码和状态快照'
+Assert-True ((Get-AppEventColumnNames).Count -eq 15) 'EVENT CSV 列数量固定'
+Assert-Throws {
+    ConvertFrom-AppEventLine -Line ($eventLine -replace ',2,3,S,', ',2,0,S,')
+} '拒绝 EVENT 零事件位'
+
 $validMotorCaptureLine = 'MC,1,7,17,1176000,27,47,65535,-32768,-840,840,11600,6,31'
 $motorCapture = ConvertFrom-MotorCaptureSampleLine -Line $validMotorCaptureLine
 Assert-True ($motorCapture.capture_index -eq 7) '解析高速采集索引'

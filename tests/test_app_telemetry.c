@@ -56,6 +56,38 @@ static void FillWorstCase(AppTelemetryInput *input)
   input->motion_gate_reject_count = UINT32_MAX;
   input->invalidated_motor_command_count = UINT32_MAX;
   input->adc_error_count = UINT32_MAX;
+  input->telemetry_enqueued_count = UINT32_MAX;
+  input->telemetry_enqueue_drop_count = UINT32_MAX;
+  input->telemetry_format_error_count = UINT32_MAX;
+  for (uint32_t i = 0U; i < 4U; ++i) {
+    input->telemetry_frame_failure_count[i] = UINT32_MAX;
+  }
+  input->capture_event_drop_count = UINT32_MAX;
+  input->capture_export_error_count = UINT32_MAX;
+  input->health_miss_count = UINT32_MAX;
+  input->minimum_free_heap_bytes = UINT32_MAX;
+  for (uint32_t i = 0U; i < 5U; ++i) {
+    input->stack_free_bytes[i] = UINT32_MAX;
+  }
+  memset(&input->uart, 0xFF, sizeof(input->uart));
+  memset(&input->imu, 0, sizeof(input->imu));
+  input->imu.health = APP_IMU_HEALTH_ESTIMATOR_FAULT;
+  input->imu.flags = UINT32_MAX;
+  input->imu.sequence = UINT32_MAX;
+  input->imu.sensor_timestamp = UINT32_MAX;
+  input->imu.sample_age_ms = UINT32_MAX;
+  input->imu.read_error_count = UINT32_MAX;
+  input->imu.consecutive_error_count = UINT32_MAX;
+  input->imu.backoff_count = UINT32_MAX;
+  input->imu.retry_delay_ms = UINT32_MAX;
+  input->imu.duplicate_count = UINT32_MAX;
+  input->imu.dropped_sample_count = UINT32_MAX;
+  input->imu.accel_update_accept_count = UINT32_MAX;
+  input->imu.accel_update_reject_count = UINT32_MAX;
+  input->imu.spike_reject_count = UINT32_MAX;
+  input->imu.consecutive_spike_count = UINT32_MAX;
+  input->imu.stable_sample_count = UINT32_MAX;
+  input->imu.estimator_fault_count = UINT32_MAX;
   input->critical_tasks_alive = true;
   input->runtime_ready = true;
   input->motion_inhibited = true;
@@ -144,10 +176,102 @@ static void TestArguments(void)
   assert(!AppTelemetry_Format(&input, frame, (uint16_t)sizeof(frame), NULL));
 }
 
+static void TestTypedFramesAndBandwidth(void)
+{
+  AppTelemetryInput input;
+  AppTelemetrySchedule schedule;
+  uint8_t frame[ROBOT_CONFIG_UART_TX_FRAME_MAX_LENGTH];
+  uint16_t lengths[4] = {0U, 0U, 0U, 0U};
+  FillWorstCase(&input);
+  AppTelemetrySchedule_Init(&schedule, 1000U);
+  AppTelemetrySchedule_UpdateEvents(&schedule, &input);
+
+  for (uint32_t type = 0U; type < 4U; ++type) {
+    assert(AppTelemetry_FormatTyped(
+      (AppTelemetryFrameType)type,
+      &schedule,
+      &input,
+      frame,
+      (uint16_t)sizeof(frame),
+      &lengths[type]));
+    assert(lengths[type] > 0U);
+    assert(lengths[type] <= ROBOT_CONFIG_UART_TX_FRAME_MAX_LENGTH);
+    assert(frame[lengths[type] - 1U] == (uint8_t)'\n');
+  }
+
+  assert(memcmp(frame, "EVENT,1,", 8U) == 0);
+  const uint32_t worst_bytes_per_second =
+    ((uint32_t)lengths[APP_TELEMETRY_FRAME_STAT] * 1000U /
+      ROBOT_CONFIG_TELEMETRY_PERIOD_MS) +
+    ((uint32_t)lengths[APP_TELEMETRY_FRAME_IMUQ] * 1000U /
+      ROBOT_CONFIG_IMUQ_TELEMETRY_PERIOD_MS) +
+    ((uint32_t)lengths[APP_TELEMETRY_FRAME_RES] * 1000U /
+      ROBOT_CONFIG_RES_TELEMETRY_PERIOD_MS) +
+    ((uint32_t)lengths[APP_TELEMETRY_FRAME_EVENT] * 1000U /
+      ROBOT_CONFIG_EVENT_TELEMETRY_MIN_PERIOD_MS);
+  const uint32_t uart_bytes_per_second =
+    ROBOT_CONFIG_UART_BAUDRATE / UART_8N1_BITS_PER_BYTE;
+  assert((worst_bytes_per_second * 4U) <=
+         (uart_bytes_per_second * 3U));
+
+  uint16_t failed_length = 123U;
+  assert(!AppTelemetry_FormatTyped(
+    APP_TELEMETRY_FRAME_EVENT,
+    &schedule,
+    &input,
+    frame,
+    (uint16_t)(lengths[APP_TELEMETRY_FRAME_EVENT] - 1U),
+    &failed_length));
+  assert(failed_length == 0U);
+}
+
+static void TestTypedSchedule(void)
+{
+  AppTelemetryInput input;
+  AppTelemetrySchedule schedule;
+  AppTelemetryFrameType frame_type;
+  memset(&input, 0, sizeof(input));
+  AppTelemetrySchedule_Init(&schedule, UINT32_MAX - 20U);
+  AppTelemetrySchedule_UpdateEvents(&schedule, &input);
+
+  assert(AppTelemetrySchedule_Select(
+    &schedule, UINT32_MAX - 20U, true, &frame_type));
+  assert(frame_type == APP_TELEMETRY_FRAME_EVENT);
+  AppTelemetrySchedule_MarkAttempt(
+    &schedule, frame_type, UINT32_MAX - 20U, false);
+  assert(schedule.pending_event_flags == APP_TELEMETRY_EVENT_BOOT);
+  assert(AppTelemetrySchedule_Select(
+    &schedule, UINT32_MAX - 19U, false, &frame_type));
+  assert(frame_type == APP_TELEMETRY_FRAME_STAT);
+  assert(AppTelemetrySchedule_Select(
+    &schedule, 80U, true, &frame_type));
+  assert(frame_type == APP_TELEMETRY_FRAME_EVENT);
+  AppTelemetrySchedule_MarkAttempt(&schedule, frame_type, 80U, true);
+  assert(schedule.pending_event_flags == 0U);
+  assert(schedule.event_sequence == 1U);
+  assert(AppTelemetrySchedule_Select(
+    &schedule, 81U, true, &frame_type));
+  assert(frame_type == APP_TELEMETRY_FRAME_STAT);
+  AppTelemetrySchedule_MarkAttempt(&schedule, frame_type, 81U, true);
+
+  input.runtime_ready = true;
+  input.motor.state = APP_MOTOR_OPEN_LOOP_RUNNING;
+  input.telemetry_format_error_count = 1U;
+  AppTelemetrySchedule_UpdateEvents(&schedule, &input);
+  assert((schedule.pending_event_flags &
+          APP_TELEMETRY_EVENT_READY_CHANGED) != 0U);
+  assert((schedule.pending_event_flags &
+          APP_TELEMETRY_EVENT_MOTOR_STATE_CHANGED) != 0U);
+  assert((schedule.pending_event_flags &
+          APP_TELEMETRY_EVENT_DROP_CHANGED) != 0U);
+}
+
 int main(void)
 {
   TestNormalFrame();
   TestWorstCaseBudgetAndBoundary();
   TestArguments();
+  TestTypedFramesAndBandwidth();
+  TestTypedSchedule();
   return 0;
 }

@@ -53,6 +53,10 @@ if (Test-Path -LiteralPath $captureDirectory) {
 
 $rawPath = Join-Path $captureDirectory 'raw_uart.log'
 $telemetryPath = Join-Path $captureDirectory 'telemetry.csv'
+$statPath = Join-Path $captureDirectory 'stat.csv'
+$imuqPath = Join-Path $captureDirectory 'imuq.csv'
+$resourcePath = Join-Path $captureDirectory 'resources.csv'
+$eventsPath = Join-Path $captureDirectory 'events.csv'
 $motorCapturePath = Join-Path $captureDirectory 'motor_capture.csv'
 $motorCaptureEventsPath = Join-Path $captureDirectory 'motor_capture_events.csv'
 $speedCapturePath = Join-Path $captureDirectory 'speed_capture.csv'
@@ -76,6 +80,10 @@ $serial.Encoding = [Text.Encoding]::ASCII
 
 $rawStream = $null
 $telemetryWriter = $null
+$statWriter = $null
+$imuqWriter = $null
+$resourceWriter = $null
+$eventsWriter = $null
 $motorCaptureWriter = $null
 $motorCaptureEventsWriter = $null
 $speedCaptureWriter = $null
@@ -91,6 +99,14 @@ $rawByteCount = [uint64]0
 $completeLineCount = [uint64]0
 $telemetryRowCount = [uint64]0
 $telemetryParseErrorCount = [uint64]0
+$statRowCount = [uint64]0
+$statParseErrorCount = [uint64]0
+$imuqRowCount = [uint64]0
+$imuqParseErrorCount = [uint64]0
+$resourceRowCount = [uint64]0
+$resourceParseErrorCount = [uint64]0
+$eventRowCount = [uint64]0
+$eventParseErrorCount = [uint64]0
 $motorCaptureRowCount = [uint64]0
 $motorCaptureEventCount = [uint64]0
 $motorCaptureParseErrorCount = [uint64]0
@@ -109,6 +125,10 @@ try {
         [IO.FileAccess]::Write,
         [IO.FileShare]::Read)
     $telemetryWriter = [IO.StreamWriter]::new($telemetryPath, $false, $utf8WithoutBom)
+    $statWriter = [IO.StreamWriter]::new($statPath, $false, $utf8WithoutBom)
+    $imuqWriter = [IO.StreamWriter]::new($imuqPath, $false, $utf8WithoutBom)
+    $resourceWriter = [IO.StreamWriter]::new($resourcePath, $false, $utf8WithoutBom)
+    $eventsWriter = [IO.StreamWriter]::new($eventsPath, $false, $utf8WithoutBom)
     $motorCaptureWriter = [IO.StreamWriter]::new(
         $motorCapturePath, $false, $utf8WithoutBom)
     $motorCaptureEventsWriter = [IO.StreamWriter]::new(
@@ -121,6 +141,13 @@ try {
 
     $telemetryColumns = @('capture_elapsed_ms', 'host_received_utc') + @(Get-AppTelemetryColumnNames)
     $telemetryWriter.WriteLine((ConvertTo-CaptureCsvLine -Values $telemetryColumns))
+    $statWriter.WriteLine((ConvertTo-CaptureCsvLine -Values $telemetryColumns))
+    $imuqColumns = @('capture_elapsed_ms', 'host_received_utc') + @(Get-AppImuqColumnNames)
+    $imuqWriter.WriteLine((ConvertTo-CaptureCsvLine -Values $imuqColumns))
+    $resourceColumns = @('capture_elapsed_ms', 'host_received_utc') + @(Get-AppResourceColumnNames)
+    $resourceWriter.WriteLine((ConvertTo-CaptureCsvLine -Values $resourceColumns))
+    $eventColumns = @('capture_elapsed_ms', 'host_received_utc') + @(Get-AppEventColumnNames)
+    $eventsWriter.WriteLine((ConvertTo-CaptureCsvLine -Values $eventColumns))
     $motorCaptureColumns =
         @('capture_elapsed_ms', 'host_received_utc') + @(Get-MotorCaptureColumnNames)
     $motorCaptureWriter.WriteLine(
@@ -224,6 +251,80 @@ try {
                 }
                 continue
             }
+            if ($line.StartsWith('STAT,', [StringComparison]::Ordinal)) {
+                try {
+                    $stat = ConvertFrom-AppStatLine -Line $line
+                    $rowValues = @(
+                        [uint64]$stopwatch.ElapsedMilliseconds,
+                        [DateTimeOffset]::UtcNow.ToString('O')
+                    )
+                    foreach ($column in (Get-AppTelemetryColumnNames)) {
+                        $rowValues += $stat.$column
+                    }
+                    $csvRow = ConvertTo-CaptureCsvLine -Values $rowValues
+                    $statWriter.WriteLine($csvRow)
+                    $telemetryWriter.WriteLine($csvRow)
+                    $statRowCount++
+                    $telemetryRowCount++
+                } catch {
+                    $statParseErrorCount++
+                }
+                continue
+            }
+            if ($line.StartsWith('IMUQ,', [StringComparison]::Ordinal)) {
+                try {
+                    $imuq = ConvertFrom-AppImuqLine -Line $line
+                    $rowValues = @(
+                        [uint64]$stopwatch.ElapsedMilliseconds,
+                        [DateTimeOffset]::UtcNow.ToString('O')
+                    )
+                    foreach ($column in (Get-AppImuqColumnNames)) {
+                        $rowValues += $imuq.$column
+                    }
+                    $imuqWriter.WriteLine(
+                        (ConvertTo-CaptureCsvLine -Values $rowValues))
+                    $imuqRowCount++
+                } catch {
+                    $imuqParseErrorCount++
+                }
+                continue
+            }
+            if ($line.StartsWith('RES,', [StringComparison]::Ordinal)) {
+                try {
+                    $resource = ConvertFrom-AppResourceLine -Line $line
+                    $rowValues = @(
+                        [uint64]$stopwatch.ElapsedMilliseconds,
+                        [DateTimeOffset]::UtcNow.ToString('O')
+                    )
+                    foreach ($column in (Get-AppResourceColumnNames)) {
+                        $rowValues += $resource.$column
+                    }
+                    $resourceWriter.WriteLine(
+                        (ConvertTo-CaptureCsvLine -Values $rowValues))
+                    $resourceRowCount++
+                } catch {
+                    $resourceParseErrorCount++
+                }
+                continue
+            }
+            if ($line.StartsWith('EVENT,', [StringComparison]::Ordinal)) {
+                try {
+                    $event = ConvertFrom-AppEventLine -Line $line
+                    $rowValues = @(
+                        [uint64]$stopwatch.ElapsedMilliseconds,
+                        [DateTimeOffset]::UtcNow.ToString('O')
+                    )
+                    foreach ($column in (Get-AppEventColumnNames)) {
+                        $rowValues += $event.$column
+                    }
+                    $eventsWriter.WriteLine(
+                        (ConvertTo-CaptureCsvLine -Values $rowValues))
+                    $eventRowCount++
+                } catch {
+                    $eventParseErrorCount++
+                }
+                continue
+            }
             if ($line.StartsWith('MC,', [StringComparison]::Ordinal)) {
                 try {
                     $sample = ConvertFrom-MotorCaptureSampleLine -Line $line
@@ -321,6 +422,12 @@ try {
         $telemetryWriter.Flush()
         $telemetryWriter.Dispose()
     }
+    foreach ($typedWriter in @($statWriter, $imuqWriter, $resourceWriter, $eventsWriter)) {
+        if ($null -ne $typedWriter) {
+            $typedWriter.Flush()
+            $typedWriter.Dispose()
+        }
+    }
     if ($null -ne $motorCaptureWriter) {
         $motorCaptureWriter.Flush()
         $motorCaptureWriter.Dispose()
@@ -343,7 +450,7 @@ try {
     }
 
     $metadata = [ordered]@{
-        schema_version = 2
+        schema_version = 3
         tool = 'tools/capture_serial.ps1'
         tool_sha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
         library_sha256 = (Get-FileHash `
@@ -381,6 +488,14 @@ try {
             complete_lines = $completeLineCount
             telemetry_rows = $telemetryRowCount
             telemetry_parse_errors = $telemetryParseErrorCount
+            stat_rows = $statRowCount
+            stat_parse_errors = $statParseErrorCount
+            imuq_rows = $imuqRowCount
+            imuq_parse_errors = $imuqParseErrorCount
+            resource_rows = $resourceRowCount
+            resource_parse_errors = $resourceParseErrorCount
+            event_rows = $eventRowCount
+            event_parse_errors = $eventParseErrorCount
             motor_capture_rows = $motorCaptureRowCount
             motor_capture_events = $motorCaptureEventCount
             motor_capture_parse_errors = $motorCaptureParseErrorCount
@@ -395,6 +510,10 @@ try {
         artifacts = [ordered]@{
             raw_uart_log = 'raw_uart.log'
             telemetry_csv = 'telemetry.csv'
+            stat_csv = 'stat.csv'
+            imuq_csv = 'imuq.csv'
+            resources_csv = 'resources.csv'
+            events_csv = 'events.csv'
             motor_capture_csv = 'motor_capture.csv'
             motor_capture_events_csv = 'motor_capture_events.csv'
             speed_capture_csv = 'speed_capture.csv'
@@ -415,6 +534,10 @@ try {
     RawBytes = $rawByteCount
     TelemetryRows = $telemetryRowCount
     TelemetryParseErrors = $telemetryParseErrorCount
+    StatRows = $statRowCount
+    ImuqRows = $imuqRowCount
+    ResourceRows = $resourceRowCount
+    EventRows = $eventRowCount
     MotorCaptureRows = $motorCaptureRowCount
     MotorCaptureEvents = $motorCaptureEventCount
     MotorCaptureParseErrors = $motorCaptureParseErrorCount

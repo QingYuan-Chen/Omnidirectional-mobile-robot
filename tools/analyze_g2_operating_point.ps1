@@ -35,8 +35,17 @@ $outputPath = Join-Path $resolvedCapture 'g2_operating_point_summary.json'
 
 $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
 $telemetry = @(Import-Csv -LiteralPath $telemetryPath)
+$typedParseErrors = [uint64]0
+foreach ($name in @(
+    'stat_parse_errors', 'imuq_parse_errors',
+    'resource_parse_errors', 'event_parse_errors')) {
+    if ($null -ne $metadata.counts.PSObject.Properties[$name]) {
+        $typedParseErrors += [uint64]$metadata.counts.$name
+    }
+}
 if ([string]$metadata.outcome -cne 'completed' -or
     [uint64]$metadata.counts.telemetry_parse_errors -ne 0 -or
+    $typedParseErrors -ne 0 -or
     $telemetry.Count -ne [int]$metadata.counts.telemetry_rows) {
     throw '采集未完整完成、包含解析错误或遥测行数不闭合，拒绝工作点分析'
 }

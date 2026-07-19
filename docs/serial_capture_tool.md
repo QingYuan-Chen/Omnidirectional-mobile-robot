@@ -5,7 +5,11 @@
 `tools/capture_serial.ps1` 用于 M2 板测时直连调试串口，显式选择 COM 口并同时保存：
 
 - `raw_uart.log`：串口收到的原始字节，不增加主机前缀；
-- `telemetry.csv`：按当前 `T/R/D/E/P/B/S/I/J/L/M/C` 协议解析的结构化遥测；
+- `telemetry.csv`：旧 `T,...` 或新 `STAT,1,...` 投影得到的 40 列兼容遥测；
+- `stat.csv`：schema 1 状态帧，与 `telemetry.csv` 使用相同的 40 个值字段；
+- `imuq.csv`：IMU 序号、时间戳、年龄、健康、标志及质量/恢复累计计数；
+- `resources.csv`：控制时序、五任务栈水位、最小剩余堆、UART 和各类发送失败计数；
+- `events.csv`：带板端时刻、序号、变化位掩码和当前安全状态快照的事件；
 - `motor_capture.csv`：停车后导出的板内 1 kHz MA 电机高速样本；
 - `motor_capture_events.csv`：高速记录开始、停止、导出边界和拒绝事件；
 - `commands.csv`：计划时间、实际发送时间、命令文本和发送结果；
@@ -28,6 +32,28 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\capture_serial.p
 `-Port` 与 `-FirmwareCommit` 均为必填项。默认配置是 230400 baud、8N1、无流控、DTR/RTS 关闭；`-SendStatusAtStart` 会在采集开始时发送一条 `STATUS` 并把实际发送时刻写入 `commands.csv`。
 
 默认安全模式只允许 `STATUS`。这使无动力通信验收不会因为计划文件内容错误而发送运动命令。
+
+新固件收到 `STATUS` 后调度一帧即时 `STAT`；若同时存在到期 `EVENT`，事件先发送且强制
+状态请求保持到后续通信循环。`STAT` 仍包含纯状态安全门需要的电池毫伏、目标/实际 PWM、
+运行就绪、运动禁止、锁存故障、ESTOP、电机状态和累计错误总览。主机没有收到有效
+`STAT` 时只能判为状态门未通过，不能凭旧帧或其他类型帧解除运动限制。
+
+## 分类型低频遥测
+
+schema 1 使用四种独立行协议：
+
+- `STAT,1,...`：20 Hz 状态、编码器、电机、安全和错误总览；
+- `IMUQ,1,...`：10 Hz IMU 质量、退避、重复/丢样、突变和估计器计数；
+- `RES,1,...`：2 Hz 控制时序、通信资源、五任务栈水位和最小剩余堆；
+- `EVENT,1,...`：启动及安全/健康/错误变化事件，最多 10 Hz。
+
+固件每个通信循环最多选择一个诊断帧，顺序为
+`EVENT > STATUS 强制 STAT > 周期 STAT > IMUQ > RES`。四种帧按最坏长度和最高频率
+合并后的预算不得超过 230400/8N1 有效字节带宽的 75%。每种帧的格式化或入队失败在
+`RES` 中有独立累计计数；`EVENT` 失败后保留待发变化位，但限频机制仍生效。
+
+这套 ASCII schema 仍是板级诊断协议，不是 M5 的正式 ROS2/X-Protocol。事件允许在
+100 ms 窗内合并，不能替代原始日志或被控制链当作安全输入。
 
 ## 定时命令计划
 
@@ -86,7 +112,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 ## CSV 字段与失败处理
 
-`telemetry.csv` 的前两列是 `capture_elapsed_ms` 和 `host_received_utc`，其后按固件线协议展开 40 个字段。整数范围、固定标签、字段数量和系统布尔值均会校验；格式不合法的 `T,...` 行不进入 CSV，并累计到 `telemetry_parse_errors`。
+`telemetry.csv` 的前两列是 `capture_elapsed_ms` 和 `host_received_utc`，其后固定为既有
+40 个值字段。旧 `T,...` 直接进入该文件；新 `STAT,1,...` 同时进入 `stat.csv` 和
+`telemetry.csv`，从而保持既有 G2 分析器兼容。`STAT` 额外严格限制 schema、电机状态、
+IMU 健康和 int16 PWM 范围。
+
+`imuq.csv`、`resources.csv` 和 `events.csv` 同样带主机接收时间。四种新帧分别维护
+`*_rows` 与 `*_parse_errors`；metadata schema 3 还记录各产物名称。字段数、固定标签、
+整数边界、枚举、布尔值、事件位掩码或 UART 队列深度不合法时，该行不进入 CSV。任何
+完整性分析都必须同时检查四类解析错误，不能只读取旧 `telemetry_parse_errors`。
 
 `motor_capture.csv` 与 `motor_capture_events.csv` 同样带有主机接收时间。未知版本、字段
 数量、整数边界、电机状态、安全位或事件类型会累计到
@@ -96,10 +130,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 ## 离线验证
 
-串口解析、数值边界、CSV 转义、命令安全门和计划排序测试已接入统一入口：
+串口解析、四类 schema/数值边界、兼容视图、CSV 转义、命令安全门和计划排序测试已接入统一入口：
 
 ```powershell
 .\tools\run_host_tests.ps1 -Clean
 ```
 
-测试不需要连接开发板；真正的端口打开、原始字节保存和实时解析仍必须通过一次实机采集验收。
+当前统一主机测试为 25/25；串口解析在 PowerShell 7 和 Windows PowerShell 5.1 下均为
+48 项断言通过。测试不需要连接开发板；真正的 USART2 周期、`STATUS` 响应、四类行数、
+队列失败计数和原始字节保存仍必须通过一次无动力实机采集验收。

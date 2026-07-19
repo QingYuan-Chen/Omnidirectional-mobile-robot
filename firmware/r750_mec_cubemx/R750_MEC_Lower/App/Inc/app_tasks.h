@@ -37,7 +37,8 @@ typedef enum {
  * 通信任务拥有的累计诊断快照。
  * protocol 和 debug_uart 分别来自解析器与当前配置的调试 UART；queue_drop 表示运动
  * 命令未进入控制队列；telemetry_enqueue_drop 表示完整遥测帧未进入发送队列；
- * format_error 表示本地缓冲容量不足或参数异常；motion_gate_reject 表示普通命令在
+ * format_error 表示本地缓冲容量不足或参数异常；telemetry_frame_failure 按
+ * STAT/IMUQ/RES/EVENT 顺序合并统计格式或入队失败；motion_gate_reject 表示普通命令在
  * 运行许可关闭时被前置拒绝，
  * estop_command_count 记录绕过普通队列的急停命令。
  */
@@ -48,6 +49,7 @@ typedef struct {
   uint32_t telemetry_enqueued_count;
   uint32_t telemetry_enqueue_drop_count;
   uint32_t telemetry_format_error_count;
+  uint32_t telemetry_frame_failure_count[4];
   uint32_t adc_error_count;
   uint32_t motion_gate_reject_count;
   uint32_t estop_command_count;
@@ -77,6 +79,7 @@ typedef struct {
   uint32_t health_miss_count;
   uint32_t invalidated_motor_command_count;
   uint32_t stack_free_bytes[APP_TASK_COUNT];
+  uint32_t minimum_free_heap_bytes;
   AppMotionGate motion_gate;
   bool critical_tasks_alive;
   bool runtime_ready;

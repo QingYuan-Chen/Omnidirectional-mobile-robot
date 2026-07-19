@@ -187,6 +187,166 @@ function ConvertFrom-AppTelemetryLine {
     return [pscustomobject]$record
 }
 
+function ConvertFrom-AppStatLine {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Line
+    )
+
+    $normalizedLine = $Line.TrimEnd([char]13)
+    if (-not $normalizedLine.StartsWith('STAT,1,', [StringComparison]::Ordinal)) {
+        throw 'STAT 遥测必须使用已知的 schema 1'
+    }
+    $record = ConvertFrom-AppTelemetryLine -Line ('T,' + $normalizedLine.Substring(7))
+    if ([uint64]$record.motor_state -gt 6) {
+        throw "STAT motor_state 超出已知状态范围：$($record.motor_state)"
+    }
+    if ([uint64]$record.imu_health -gt 5) {
+        throw "STAT imu_health 超出已知健康范围：$($record.imu_health)"
+    }
+    if ([int64]$record.target_pwm -lt [int16]::MinValue -or
+        [int64]$record.target_pwm -gt [int16]::MaxValue -or
+        [int64]$record.applied_pwm -lt [int16]::MinValue -or
+        [int64]$record.applied_pwm -gt [int16]::MaxValue) {
+        throw 'STAT PWM 超出固件 int16 范围'
+    }
+    return $record
+}
+
+function Get-AppImuqColumnNames {
+    return @(
+        'schema_version', 'board_now_ms', 'imu_sequence',
+        'sensor_timestamp', 'sample_age_ms', 'health', 'flags',
+        'read_error_count', 'consecutive_error_count', 'backoff_count',
+        'retry_delay_ms', 'duplicate_count', 'dropped_sample_count',
+        'accel_update_accept_count', 'accel_update_reject_count',
+        'spike_reject_count', 'consecutive_spike_count',
+        'stable_sample_count', 'estimator_fault_count'
+    )
+}
+
+function ConvertFrom-AppImuqLine {
+    param([Parameter(Mandatory = $true)][string]$Line)
+
+    $tokens = $Line.TrimEnd([char]13).Split(
+        [char[]]@(','), [StringSplitOptions]::None)
+    if ($tokens.Count -ne 23 -or $tokens[0] -cne 'IMUQ' -or
+        $tokens[1] -cne '1' -or $tokens[3] -cne 'Q' -or
+        $tokens[9] -cne 'R' -or $tokens[16] -cne 'A') {
+        throw 'IMUQ 遥测必须是 23 字段的 IMUQ,1 帧'
+    }
+    $u32Maximum = [uint64][uint32]::MaxValue
+    $record = [ordered]@{
+        schema_version = [uint64]1
+        board_now_ms = ConvertTo-AppTelemetryUnsigned $tokens[2] $u32Maximum 'board_now_ms'
+    }
+    $names = @(
+        'imu_sequence', 'sensor_timestamp', 'sample_age_ms', 'health', 'flags',
+        'read_error_count', 'consecutive_error_count', 'backoff_count',
+        'retry_delay_ms', 'duplicate_count', 'dropped_sample_count',
+        'accel_update_accept_count', 'accel_update_reject_count',
+        'spike_reject_count', 'consecutive_spike_count',
+        'stable_sample_count', 'estimator_fault_count'
+    )
+    $indexes = @(4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22)
+    for ($index = 0; $index -lt $names.Count; $index++) {
+        $maximum = if ($names[$index] -eq 'health') { [uint64]5 } else { $u32Maximum }
+        $record[$names[$index]] = ConvertTo-AppTelemetryUnsigned `
+            $tokens[$indexes[$index]] $maximum $names[$index]
+    }
+    return [pscustomobject]$record
+}
+
+function Get-AppResourceColumnNames {
+    return @(
+        'schema_version', 'board_now_ms', 'irq_jitter_cycles',
+        'irq_jitter_max_cycles', 'wake_latency_cycles',
+        'wake_latency_max_cycles', 'wake_latency_p99_us', 'wcet_cycles',
+        'wcet_max_cycles', 'timer_irq_missed_period_count',
+        'task_iteration_missed_period_count', 'deadline_miss_count',
+        'control_stack_free_bytes', 'safety_stack_free_bytes',
+        'comm_stack_free_bytes', 'imu_stack_free_bytes',
+        'monitor_stack_free_bytes', 'minimum_free_heap_bytes',
+        'health_miss_count', 'uart_tx_queued_frame_count',
+        'uart_error_count', 'uart_rx_overflow_count', 'uart_tx_fault_count',
+        'telemetry_enqueued_count', 'telemetry_enqueue_drop_count',
+        'telemetry_format_error_count', 'capture_event_drop_count',
+        'capture_export_error_count', 'command_queue_drop_count',
+        'motion_gate_reject_count', 'invalidated_motor_command_count',
+        'adc_error_count', 'stat_frame_failure_count',
+        'imuq_frame_failure_count', 'res_frame_failure_count',
+        'event_frame_failure_count'
+    )
+}
+
+function ConvertFrom-AppResourceLine {
+    param([Parameter(Mandatory = $true)][string]$Line)
+
+    $tokens = $Line.TrimEnd([char]13).Split(
+        [char[]]@(','), [StringSplitOptions]::None)
+    if ($tokens.Count -ne 42 -or $tokens[0] -cne 'RES' -or
+        $tokens[1] -cne '1' -or $tokens[3] -cne 'T' -or
+        $tokens[14] -cne 'S' -or $tokens[21] -cne 'H' -or
+        $tokens[23] -cne 'U' -or $tokens[37] -cne 'F') {
+        throw 'RES 遥测必须是 42 字段的 RES,1 帧'
+    }
+    $names = @(Get-AppResourceColumnNames)
+    $indexes = @(1, 2) + @(4..13) + @(15..20) + @(22) + @(24..36) + @(38..41)
+    $u32Maximum = [uint64][uint32]::MaxValue
+    $record = [ordered]@{}
+    for ($index = 0; $index -lt $names.Count; $index++) {
+        $maximum = if ($names[$index] -eq 'uart_tx_queued_frame_count') {
+            [uint64]4
+        } else {
+            $u32Maximum
+        }
+        $record[$names[$index]] = ConvertTo-AppTelemetryUnsigned `
+            $tokens[$indexes[$index]] $maximum $names[$index]
+    }
+    return [pscustomobject]$record
+}
+
+function Get-AppEventColumnNames {
+    return @(
+        'schema_version', 'board_now_ms', 'event_sequence', 'event_flags',
+        'runtime_ready', 'motion_inhibited', 'fault_latched', 'motor_state',
+        'estop_latched', 'imu_health', 'uart_error_count',
+        'telemetry_enqueue_drop_count', 'telemetry_format_error_count',
+        'adc_error_count', 'invalidated_motor_command_count'
+    )
+}
+
+function ConvertFrom-AppEventLine {
+    param([Parameter(Mandatory = $true)][string]$Line)
+
+    $tokens = $Line.TrimEnd([char]13).Split(
+        [char[]]@(','), [StringSplitOptions]::None)
+    if ($tokens.Count -ne 18 -or $tokens[0] -cne 'EVENT' -or
+        $tokens[1] -cne '1' -or $tokens[5] -cne 'S' -or
+        $tokens[12] -cne 'C') {
+        throw 'EVENT 遥测必须是 18 字段的 EVENT,1 帧'
+    }
+    $names = @(Get-AppEventColumnNames)
+    $indexes = @(1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17)
+    $u32Maximum = [uint64][uint32]::MaxValue
+    $record = [ordered]@{}
+    for ($index = 0; $index -lt $names.Count; $index++) {
+        $name = $names[$index]
+        $maximum = switch ($name) {
+            { $_ -in @('runtime_ready', 'motion_inhibited', 'fault_latched', 'estop_latched') } { [uint64]1; break }
+            'motor_state' { [uint64]6; break }
+            'imu_health' { [uint64]5; break }
+            default { $u32Maximum }
+        }
+        $record[$name] = ConvertTo-AppTelemetryUnsigned `
+            $tokens[$indexes[$index]] $maximum $name
+    }
+    if ($record.event_flags -eq 0 -or $record.event_flags -gt 2047) {
+        throw "EVENT event_flags 必须是已知非零位掩码：$($record.event_flags)"
+    }
+    return [pscustomobject]$record
+}
+
 function Get-MotorCaptureColumnNames {
     return @(
         'capture_index',
