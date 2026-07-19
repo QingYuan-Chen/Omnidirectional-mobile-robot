@@ -36,6 +36,14 @@ if(WIN32)
       -ExecutionPolicy Bypass
       -File "${CMAKE_CURRENT_LIST_DIR}/test_motor_capture_analysis.ps1"
   )
+  add_test(
+    NAME g2_dynamic_step
+    COMMAND
+      "${POWERSHELL_EXECUTABLE}"
+      -NoProfile
+      -ExecutionPolicy Bypass
+      -File "${CMAKE_CURRENT_LIST_DIR}/test_g2_dynamic_step.ps1"
+  )
 endif()
 
 add_executable(test_app_debug_uart_config

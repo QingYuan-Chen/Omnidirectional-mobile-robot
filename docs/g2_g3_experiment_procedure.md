@@ -10,7 +10,7 @@
 - MA 三圈实测已关闭 1024 PPR 的四倍频歧义，轮端采用 122,880 counts/rev；
 - 当前遥测只提供原始计数、单周期增量和累计计数，不提供未经验证的 RPM；
 - 当前没有脉冲周期数据，不能完成 T 法或 M/T 融合评审；
-- 50 Hz 遥测快照只能做初查；2200 样本板内 1 kHz 电机高速记录软件已准备，仍需先完成无动力导出与完整时序板测，才能替代此前的快照近似结论。
+- 50 Hz 遥测快照只能做初查；2200 样本板内 1 kHz 电机高速记录已通过无动力和带动力严格验收，可用于后续受控动态数据采集。
 
 ## 首动计划生成
 
@@ -168,13 +168,56 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 修正后的有效样本不支持“机械角位置导致超过门槛的显著离散”结论；此前异常主要受不可靠实体标记这一试验条件污染。该结论只关闭已选三个悬空轮位的反向 240 重复性门，承重、多电压、温升、阶跃/斜坡、零点穿越和 Brake/Coast 仍需继续执行，不能直接进入动态建模。
 
+## 板内受控动态阶跃
+
+`new_g2_dynamic_step_plan.ps1` 为单一方向、单一幅值生成一个 14 s 独立计划。只允许 240/400/600/840 PWM，固定包含纯 `STATUS`、`CAPTURE START/STOP/STATUS/EXPORT`、`ARM`、四次 300 ms 间隔的同幅值 `PWM` 和受控 `STOP`；不在同一次计划内反转，也不生成 `ESTOP`。固件仍以 `1 count/ms` 斜坡限制实际 PWM，因此这里辨识的是“安全斜坡后的实际输入响应”，不是把目标命令误称为理想瞬时阶跃。
+
+首个建议批次使用中档 `±400`、每个方向三次。批次生成器交替正反方向先后次序，降低固定试验顺序偏差：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\new_g2_dynamic_step_batch.ps1 `
+  -BatchId g2_dynamic_midrange_pilot `
+  -FirmwareCommit cc1b43a `
+  -PeakPwms 400 `
+  -Repetitions 3 `
+  -SequenceStart 3000
+```
+
+批次和每个子计划都保持 `execution_state=not_authorized`。现场必须一次只执行一个子计划；每次动作前重新做独立纯 `STATUS`，确认动力电压至少 10.5 V、MA 停机、运行就绪且全部错误为 0，并由操作者明确授权。计划间至少冷却 30 s；任一次采集被拒绝，就停止整个批次，不继续补发后续运动。
+
+现场授权后，单个子计划使用对应的 `command_schedule.pending.csv`：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\capture_serial.ps1 `
+  -Port COM6 `
+  -DurationSeconds 14 `
+  -FirmwareCommit cc1b43a `
+  -CommandSchedulePath .\experiments\generated\<批次>\<子计划>\command_schedule.pending.csv `
+  -AllowNonStatusCommands
+```
+
+每次采集后立即运行严格分析器：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\analyze_g2_dynamic_step.ps1 `
+  -CaptureDirectory .\captures\<采集目录> `
+  -PlanDirectory .\experiments\generated\<批次>\<子计划>
+```
+
+分析器先复用 schema 2 高速门，再核对板上固件提交、13 条计划/实发命令和不超过 100 ms 的调度误差；随后检查目标幅值、实际 PWM 符号和峰值、升降斜坡、至少 50 个基线/峰值样本、期望方向至少 1,000 counts、错误方向/其他通道不超过 1,000 counts、最低动力电压、最终停机和全部错误计数。只有所有门同时通过，单次 `accepted` 才为 true。
+
+即使 `±400` 三次全部通过，也只说明首组动态采集证据可用；工具固定输出 `model_ready=false`。还需扩展其他幅值、斜坡、零点穿越、Brake/Coast、承重、多电压和温升工况并划分独立验证集后，才允许比较一阶/二阶加纯延迟模型。
+
 ## 动力接入后的执行顺序
 
 1. `[已完成]` 正向低 PWM 首动，确认 MA 通道、编码器符号、STOP 和电池压降；
 2. `[已完成]` 单独执行负向低 PWM 首动，确认方向与编码器符号对称；
 3. `[已完成]` 测量输出轴整圈计数，关闭编码器倍率冲突；
-4. `[高速记录软件已准备，待无动力板测]` 用完整 1 kHz 样本验收 TIM7 零丢周期、P99/最大抖动、唤醒延迟和 WCET；
-5. `[死区、线性扫描和悬空重复性筛选已完成]` 扩展阶跃、斜坡、零点穿越和 Brake/Coast 工况；
+4. `[已完成]` 用完整 1 kHz 样本通过无动力和带动力 TIM7 零丢周期、P99/最大抖动、唤醒延迟、WCET 及通信严格门；
+5. `[动态阶跃工具已准备，待板测]` 先执行 `±400` 各三次的中档试点，再扩展其他阶跃、斜坡、零点穿越和 Brake/Coast 工况；
 6. `[悬空工作点已执行]` 每个新增工况仍至少重复三次，并保留电池状态、温升和机械配置；
 7. 比较一阶加纯延迟、二阶加纯延迟模型；
 8. 增加脉冲周期测量后比较 M、T 与 M/T 测速，再决定 RPM 实现。
