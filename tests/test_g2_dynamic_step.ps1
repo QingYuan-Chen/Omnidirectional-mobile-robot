@@ -177,6 +177,45 @@ try {
                  $batchMeasurement.direction_comparisons.Count -eq 1) `
         '批次汇总比较双向均值但不宣称模型就绪'
 
+    $crossRepeatPrevious = @(
+        [pscustomobject]@{
+            experiment_id = 'neg1'; direction = 'Negative'; peak_pwm = 240
+            accepted = $true; peak_window_wheel_rpm = 8.825
+            signed_total_displacement_counts = 16338
+            motion_threshold_delay_ms = 227
+        },
+        [pscustomobject]@{
+            experiment_id = 'neg2'; direction = 'Negative'; peak_pwm = 240
+            accepted = $true; peak_window_wheel_rpm = 9.180
+            signed_total_displacement_counts = 17112
+            motion_threshold_delay_ms = 236
+        })
+    $normalCrossRepeat = Measure-G2DynamicCrossRepeatGate `
+        -PreviousRows $crossRepeatPrevious `
+        -CurrentRow ([pscustomobject]@{
+            experiment_id = 'neg4'; direction = 'Negative'; peak_pwm = 240
+            accepted = $true; peak_window_wheel_rpm = 9.473
+            signed_total_displacement_counts = 17407
+            motion_threshold_delay_ms = 249
+        })
+    $abnormalCrossRepeat = Measure-G2DynamicCrossRepeatGate `
+        -PreviousRows $crossRepeatPrevious `
+        -CurrentRow ([pscustomobject]@{
+            experiment_id = 'neg3'; direction = 'Negative'; peak_pwm = 240
+            accepted = $true; peak_window_wheel_rpm = 1.084
+            signed_total_displacement_counts = 3399
+            motion_threshold_delay_ms = 906
+        })
+    Assert-True ($normalCrossRepeat.evaluated -and
+                 $normalCrossRepeat.passed) `
+        '跨重复门接受与既有中位数接近的低速补测'
+    Assert-True ($abnormalCrossRepeat.evaluated -and
+                 -not $abnormalCrossRepeat.passed -and
+                 -not $abnormalCrossRepeat.gates.peak_rpm_not_below_minimum_ratio -and
+                 -not $abnormalCrossRepeat.gates.displacement_not_below_minimum_ratio -and
+                 -not $abnormalCrossRepeat.gates.motion_delay_not_above_maximum_ratio) `
+        '跨重复门同时拦截速度位移骤降和起转延迟骤增'
+
     $batchCaptureRoot = Join-Path $temporaryDirectory 'batch-captures'
     [void][IO.Directory]::CreateDirectory($batchCaptureRoot)
     $positiveRpms = @(19.0, 21.0, 21.0)

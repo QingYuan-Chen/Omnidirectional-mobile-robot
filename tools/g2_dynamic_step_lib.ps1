@@ -588,3 +588,132 @@ function Measure-G2DynamicStepBatch {
             '中档动态批次只筛选采集质量和重复性；完整多档辨识集、独立验证集与残差评估尚未完成。'
     }
 }
+
+function Get-G2DynamicMedian {
+    param(
+        [Parameter(Mandatory = $true)]
+        [double[]]$Values
+    )
+
+    if ($Values.Count -eq 0) {
+        throw '动态跨重复门的中位数输入不能为空'
+    }
+    $sorted = @($Values | Sort-Object)
+    $middle = [Math]::Floor($sorted.Count / 2)
+    if (($sorted.Count % 2) -eq 1) {
+        return [double]$sorted[$middle]
+    }
+    return ([double]$sorted[$middle - 1] + [double]$sorted[$middle]) / 2.0
+}
+
+function Measure-G2DynamicCrossRepeatGate {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$PreviousRows,
+
+        [Parameter(Mandatory = $true)]
+        [object]$CurrentRow,
+
+        [ValidateRange(2, 5)]
+        [int]$MinimumPriorCount = 2,
+
+        [ValidateRange(0.1, 0.9)]
+        [double]$MinimumResponseRatio = 0.5,
+
+        [ValidateRange(1.1, 10.0)]
+        [double]$MaximumResponseRatio = 1.5,
+
+        [ValidateRange(1.1, 10.0)]
+        [double]$MaximumDelayRatio = 2.0
+    )
+
+    $requiredColumns = @(
+        'experiment_id', 'direction', 'peak_pwm', 'accepted',
+        'peak_window_wheel_rpm', 'signed_total_displacement_counts',
+        'motion_threshold_delay_ms'
+    )
+    foreach ($column in $requiredColumns) {
+        if ($CurrentRow.PSObject.Properties.Name -notcontains $column) {
+            throw "当前动态阶跃缺少跨重复字段：$column"
+        }
+    }
+    $comparableRows = @($PreviousRows | Where-Object {
+        $_.PSObject.Properties.Name -contains 'direction' -and
+        $_.PSObject.Properties.Name -contains 'peak_pwm' -and
+        $_.PSObject.Properties.Name -contains 'accepted' -and
+        [string]$_.direction -ceq [string]$CurrentRow.direction -and
+        [int]$_.peak_pwm -eq [int]$CurrentRow.peak_pwm -and
+        [bool]$_.accepted
+    })
+    if ($comparableRows.Count -lt $MinimumPriorCount) {
+        return [pscustomobject][ordered]@{
+            evaluated = $false
+            passed = [bool]$CurrentRow.accepted
+            experiment_id = [string]$CurrentRow.experiment_id
+            prior_count = $comparableRows.Count
+            required_prior_count = $MinimumPriorCount
+            gates = [pscustomobject][ordered]@{
+                current_capture_accepted = [bool]$CurrentRow.accepted
+            }
+            ratios = $null
+            reference_medians = $null
+        }
+    }
+
+    [double]$medianPeakRpm = Get-G2DynamicMedian -Values @(
+        $comparableRows.peak_window_wheel_rpm)
+    [double]$medianDisplacement = Get-G2DynamicMedian -Values @(
+        $comparableRows.signed_total_displacement_counts)
+    [double]$medianDelay = Get-G2DynamicMedian -Values @(
+        $comparableRows.motion_threshold_delay_ms)
+    if ($medianPeakRpm -le 0.0 -or
+        $medianDisplacement -le 0.0 -or
+        $medianDelay -le 0.0) {
+        throw '动态跨重复门的历史中位数必须为正数'
+    }
+
+    [double]$peakRpmRatio =
+        [double]$CurrentRow.peak_window_wheel_rpm / $medianPeakRpm
+    [double]$displacementRatio =
+        [double]$CurrentRow.signed_total_displacement_counts /
+            $medianDisplacement
+    [double]$delayRatio =
+        [double]$CurrentRow.motion_threshold_delay_ms / $medianDelay
+    $gates = [ordered]@{
+        current_capture_accepted = [bool]$CurrentRow.accepted
+        peak_rpm_not_below_minimum_ratio =
+            ($peakRpmRatio -ge $MinimumResponseRatio)
+        peak_rpm_not_above_maximum_ratio =
+            ($peakRpmRatio -le $MaximumResponseRatio)
+        displacement_not_below_minimum_ratio =
+            ($displacementRatio -ge $MinimumResponseRatio)
+        displacement_not_above_maximum_ratio =
+            ($displacementRatio -le $MaximumResponseRatio)
+        motion_delay_not_above_maximum_ratio =
+            ($delayRatio -le $MaximumDelayRatio)
+    }
+
+    return [pscustomobject][ordered]@{
+        evaluated = $true
+        passed = -not ($gates.Values -contains $false)
+        experiment_id = [string]$CurrentRow.experiment_id
+        prior_count = $comparableRows.Count
+        required_prior_count = $MinimumPriorCount
+        thresholds = [pscustomobject][ordered]@{
+            minimum_response_ratio = $MinimumResponseRatio
+            maximum_response_ratio = $MaximumResponseRatio
+            maximum_delay_ratio = $MaximumDelayRatio
+        }
+        gates = [pscustomobject]$gates
+        ratios = [pscustomobject][ordered]@{
+            peak_window_wheel_rpm = $peakRpmRatio
+            signed_total_displacement_counts = $displacementRatio
+            motion_threshold_delay_ms = $delayRatio
+        }
+        reference_medians = [pscustomobject][ordered]@{
+            peak_window_wheel_rpm = $medianPeakRpm
+            signed_total_displacement_counts = $medianDisplacement
+            motion_threshold_delay_ms = $medianDelay
+        }
+    }
+}
