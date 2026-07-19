@@ -115,7 +115,13 @@ for ($repetition = 1; $repetition -le 3; $repetition++) {
             abort_batch_on_any_rejected_capture = $true
         }
         analysis = [ordered]@{
-            tool = 'tools/analyze_g2_low_speed_diagnostic.ps1'
+            single_capture_tool = 'tools/analyze_g2_dynamic_step.ps1'
+            batch_tool = 'tools/analyze_g2_low_speed_diagnostic.ps1'
+            counts_per_wheel_revolution = 122880
+            minimum_battery_mv = 11500
+            motion_threshold_counts = 1000
+            other_channel_limit_counts = 1000
+            minimum_full_pwm_plateau_ms = 1200
             fixed_tail_windows_ms = @(200, 300)
             stable_speed_cv_limit_percent = 5.0
             stable_speed_maximum_deviation_limit_percent = 10.0

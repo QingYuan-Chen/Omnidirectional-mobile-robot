@@ -175,17 +175,43 @@ try {
             Join-Path $firstPlanDirectory 'experiment_manifest.json') `
             -Raw -Encoding UTF8 |
             ConvertFrom-Json
+    $firstSchedule = @(Import-Csv -LiteralPath (
+        Join-Path $firstPlanDirectory 'command_schedule.pending.csv'))
+    $analysisProfile = Get-G2SingleCaptureAnalysisProfile `
+        -Manifest $firstPlan `
+        -Schedule $firstSchedule
     Assert-True (
         $firstPlan.controlled_conditions.minimum_cooldown_before_plan_seconds -eq
             60 -and
         $firstPlan.schedule.expected_full_pwm_plateau_ms -eq 1211) `
         '子计划冻结冷却时间和延长后的满PWM平台'
     Assert-True (
+        $analysisProfile.low_speed_steady_validation -and
+        $analysisProfile.minimum_full_pwm_plateau_ms -eq 1200 -and
+        $firstPlan.analysis.single_capture_tool -ceq
+            'tools/analyze_g2_dynamic_step.ps1' -and
+        $firstPlan.analysis.batch_tool -ceq
+            'tools/analyze_g2_low_speed_diagnostic.ps1') `
+        '低速清单可由单次分析器验收并绑定批次诊断工具'
+    Assert-True (
+        $firstPlan.analysis.minimum_battery_mv -eq 11500 -and
+        $firstPlan.analysis.counts_per_wheel_revolution -eq 122880 -and
+        $firstPlan.analysis.motion_threshold_counts -eq 1000 -and
+        $firstPlan.analysis.other_channel_limit_counts -eq 1000) `
+        '低速清单显式冻结单次严格门参数'
+    Assert-True (
         -not $firstPlan.controlled_conditions.temperature_measurement_required -and
         -not $firstPlan.controlled_conditions.temperature_record_required -and
         -not $firstPlan.controlled_conditions.temperature_is_acceptance_gate -and
         -not $batchManifest.preregistered_decision.temperature_baseline_enabled) `
         '独立验证明确关闭测温、温度记录和温度接受门'
+    $unsupportedPlan = $firstPlan.PSObject.Copy()
+    $unsupportedPlan.experiment_type = 'unsupported'
+    Assert-Throws {
+        Get-G2SingleCaptureAnalysisProfile `
+            -Manifest $unsupportedPlan `
+            -Schedule $firstSchedule
+    } '单次分析器拒绝未知试验类型'
 } finally {
     if (Test-Path -LiteralPath $temporaryDirectory) {
         Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force

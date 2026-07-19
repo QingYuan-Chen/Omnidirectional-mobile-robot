@@ -11,7 +11,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'g2_dynamic_step_lib.ps1')
+. (Join-Path $PSScriptRoot 'g2_low_speed_diagnostic_lib.ps1')
 
 $resolvedCapture = (Resolve-Path -LiteralPath $CaptureDirectory).Path
 $resolvedPlan = (Resolve-Path -LiteralPath $PlanDirectory).Path
@@ -39,9 +39,6 @@ foreach ($path in @(
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 |
     ConvertFrom-Json
-if ($manifest.experiment_type -cne 'g2_dynamic_bounded_step') {
-    throw '计划不是受控动态阶跃类型'
-}
 $captureMetadata =
     Get-Content -LiteralPath $captureMetadataPath -Raw -Encoding UTF8 |
         ConvertFrom-Json
@@ -49,6 +46,9 @@ $samples = @(Import-Csv -LiteralPath $samplesPath)
 $telemetry = @(Import-Csv -LiteralPath $telemetryPath)
 $plannedCommands = @(Import-Csv -LiteralPath $schedulePath)
 $actualCommands = @(Import-Csv -LiteralPath $commandsPath)
+$analysisProfile = Get-G2SingleCaptureAnalysisProfile `
+    -Manifest $manifest `
+    -Schedule $plannedCommands
 
 $baseAnalysis = & (Join-Path $PSScriptRoot 'analyze_motor_capture.ps1') `
     -CaptureDirectory $resolvedCapture `
@@ -104,11 +104,32 @@ $gates = [ordered]@{
 foreach ($property in $measurement.Gates.PSObject.Properties) {
     $gates[$property.Name] = [bool]$property.Value
 }
+$fullPwmPlateauMs =
+    [int]$measurement.Summary.target_stop_index -
+    [int]$measurement.Summary.peak_applied_index
+$gates.full_pwm_plateau_meets_plan_minimum =
+    ($fullPwmPlateauMs -ge $analysisProfile.minimum_full_pwm_plateau_ms)
+$lowSpeedDiagnostic = $null
+if ($analysisProfile.low_speed_steady_validation) {
+    $lowSpeedDiagnostic = Measure-G2LowSpeedRun `
+        -Samples $samples `
+        -ExperimentId ([string]$manifest.experiment_id) `
+        -FirstTargetIndex ([int]$measurement.Summary.first_target_index) `
+        -PeakAppliedIndex ([int]$measurement.Summary.peak_applied_index) `
+        -TargetStopIndex ([int]$measurement.Summary.target_stop_index) `
+        -MotionThresholdDelayMs (
+            [int]$measurement.Summary.motion_threshold_delay_ms) `
+        -ReportedPeakWindowRpm (
+            [double]$measurement.Summary.peak_window_wheel_rpm) `
+        -CountsPerWheelRevolution (
+            [int]$manifest.analysis.counts_per_wheel_revolution)
+}
 $accepted = -not ($gates.Values -contains $false)
 
 $summary = [ordered]@{
     schema_version = 1
     experiment_id = [string]$manifest.experiment_id
+    experiment_type = [string]$analysisProfile.experiment_type
     source_capture_directory = $resolvedCapture
     source_plan_directory = $resolvedPlan
     source_firmware_commit = [string]$captureMetadata.firmware_commit
@@ -120,6 +141,7 @@ $summary = [ordered]@{
         maximum_absolute_error_ms = $maximumDispatchErrorMs
     }
     dynamics = $measurement.Summary
+    low_speed_diagnostic = $lowSpeedDiagnostic
     high_speed_timing = $baseSummary.timing
     telemetry_counter_increments = $baseSummary.telemetry_counter_increments
     gates = $gates

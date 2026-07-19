@@ -263,6 +263,16 @@ $captures = @(
 
 固定判据为：三次单次严格门和跨重复门全部通过；末端 200 ms 与 300 ms 的 RPM `CV` 必须同时不超过 5%，两个窗口最大单次偏离必须同时不超过 10%。启动延迟单独按 10% CV 报告，但不与稳定速度混成一个指标。只有独立批次通过，才允许把 240 标记为“稳态速度可重复、启动过程非线性”的验证点；它仍不自动进入普通线性模型拟合，`model_ready` 保持 false。
 
+每次采集后仍先运行统一单次严格分析器。该入口会按 `g2_low_speed_steady_validation` 类型校验 14 条计划/实发命令、完整高速门和既有动态安全门，并额外要求实际满 -240 平台至少 1200 ms；单次摘要中的 `low_speed_diagnostic` 直接给出固定末端 200/300 ms 速度，避免批次结束后才发现窗口不完整：
+
+```powershell
+& .\tools\analyze_g2_dynamic_step.ps1 `
+  -CaptureDirectory .\captures\<本次采集目录> `
+  -PlanDirectory .\experiments\generated\<独立验证批次>\<本次子计划>
+```
+
+三次单次都接受后，再把三个采集目录一次性传给 `analyze_g2_low_speed_diagnostic.ps1`，并明确使用 `-EvidenceRole independent_validation -RequiredRepeatCount 3`。任何单次拒绝都立即中止后续动作，不得用最终批次 CV 掩盖单次证据失败。
+
 离线复跑现有五次：
 
 ```powershell

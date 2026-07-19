@@ -1,5 +1,54 @@
 ﻿. (Join-Path $PSScriptRoot 'g2_dynamic_step_lib.ps1')
 
+function Get-G2SingleCaptureAnalysisProfile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Manifest,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$Schedule
+    )
+
+    $requiredAnalysisFields = @(
+        'counts_per_wheel_revolution',
+        'minimum_battery_mv',
+        'motion_threshold_counts',
+        'other_channel_limit_counts'
+    )
+    foreach ($field in $requiredAnalysisFields) {
+        if ($Manifest.analysis.PSObject.Properties.Name -notcontains $field) {
+            throw "单次分析清单缺少字段：analysis.$field"
+        }
+    }
+
+    $experimentType = [string]$Manifest.experiment_type
+    if ($experimentType -ceq 'g2_dynamic_bounded_step') {
+        [void](Test-G2DynamicStepSchedule `
+            -Schedule $Schedule `
+            -Direction ([string]$Manifest.direction) `
+            -PeakPwm ([int]$Manifest.peak_pwm))
+        return [pscustomobject][ordered]@{
+            experiment_type = $experimentType
+            low_speed_steady_validation = $false
+            minimum_full_pwm_plateau_ms = 50
+        }
+    }
+    if ($experimentType -ceq 'g2_low_speed_steady_validation') {
+        [void](Test-G2LowSpeedValidationSchedule -Schedule $Schedule)
+        if ($Manifest.analysis.PSObject.Properties.Name -notcontains
+            'minimum_full_pwm_plateau_ms') {
+            throw '低速独立验证清单缺少字段：analysis.minimum_full_pwm_plateau_ms'
+        }
+        return [pscustomobject][ordered]@{
+            experiment_type = $experimentType
+            low_speed_steady_validation = $true
+            minimum_full_pwm_plateau_ms =
+                [int]$Manifest.analysis.minimum_full_pwm_plateau_ms
+        }
+    }
+    throw "不支持的G2单次分析试验类型：$experimentType"
+}
+
 function New-G2LowSpeedValidationSchedule {
     param(
         [ValidateRange(1, 4294967289)]
