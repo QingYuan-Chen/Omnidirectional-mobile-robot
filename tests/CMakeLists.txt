@@ -92,6 +92,25 @@ target_include_directories(test_app_encoder_accumulator PRIVATE "${APP_DIR}/Inc"
 target_compile_options(test_app_encoder_accumulator PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
 add_test(NAME app_encoder_accumulator COMMAND test_app_encoder_accumulator)
 
+add_executable(test_app_encoder_period_accumulator
+  test_app_encoder_period_accumulator.c
+  "${APP_DIR}/Src/app_encoder_period_accumulator.c"
+)
+target_include_directories(test_app_encoder_period_accumulator PRIVATE "${APP_DIR}/Inc")
+target_compile_options(test_app_encoder_period_accumulator PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+add_test(NAME app_encoder_period_accumulator COMMAND test_app_encoder_period_accumulator)
+
+add_executable(test_app_wheel_speed_estimator
+  test_app_wheel_speed_estimator.c
+  "${APP_DIR}/Src/app_wheel_speed_estimator.c"
+)
+target_include_directories(test_app_wheel_speed_estimator PRIVATE "${APP_DIR}/Inc")
+target_compile_options(test_app_wheel_speed_estimator PRIVATE -Wall -Wextra -Wshadow -Wconversion -Werror)
+if(NOT WIN32)
+  target_link_libraries(test_app_wheel_speed_estimator PRIVATE m)
+endif()
+add_test(NAME app_wheel_speed_estimator COMMAND test_app_wheel_speed_estimator)
+
 add_executable(test_app_control_tick_buffer
   test_app_control_tick_buffer.c
   "${APP_DIR}/Src/app_control_tick_buffer.c"
