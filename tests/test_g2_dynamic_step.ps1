@@ -477,6 +477,27 @@ try {
     Assert-True ($summary.command_dispatch.maximum_absolute_error_ms -eq 5) `
         '记录主机命令调度误差'
 
+    $lateMotionSamples = @($samples | ForEach-Object {
+        $copy = $_ | Select-Object *
+        $copy.encoder_delta_ma =
+            if ([int]$copy.capture_index -ge 1050 -and
+                [int]$copy.capture_index -lt 1250) {
+                -10
+            } else {
+                0
+            }
+        $copy
+    })
+    $lateMotionMeasurement = Measure-G2DynamicStep `
+        -Samples $lateMotionSamples `
+        -Telemetry $telemetry `
+        -Direction Negative `
+        -PeakPwm 240
+    Assert-True (
+        -not $lateMotionMeasurement.Gates.expected_motion_threshold_reached -and
+        -not $lateMotionMeasurement.Summary.motion_threshold_reached_before_stop) `
+        '运动阈值只在STOP后达到时必须拒绝单次证据'
+
     $telemetry[-1].encoder_total_2 = 2000
     $telemetry |
         Export-Csv -LiteralPath (Join-Path $captureDirectory 'telemetry.csv') `

@@ -335,7 +335,9 @@ function Measure-G2DynamicStep {
         ramp_down_matches_1_count_per_ms =
             ([Math]::Abs($rampDownMilliseconds - $expectedRampMilliseconds) -le 2)
         at_least_50_peak_samples = ($peakRows.Count -ge 50)
-        expected_motion_threshold_reached = ($motionThresholdIndex -ge 0)
+        expected_motion_threshold_reached =
+            ($motionThresholdIndex -ge 0 -and
+             $motionThresholdIndex -lt $targetStopIndex)
         wrong_direction_excursion_within_limit =
             ((-$minimumSignedCounts) -le $MotionThresholdCounts)
         other_channels_within_limit = $otherChannelsQuiet
@@ -366,6 +368,9 @@ function Measure-G2DynamicStep {
                 } else {
                     $null
                 }
+            motion_threshold_reached_before_stop =
+                ($motionThresholdIndex -ge 0 -and
+                 $motionThresholdIndex -lt $targetStopIndex)
             signed_total_displacement_counts = $directionSign * $relativeCounts
             maximum_signed_displacement_counts = $maximumSignedCounts
             maximum_wrong_direction_excursion_counts = -$minimumSignedCounts
