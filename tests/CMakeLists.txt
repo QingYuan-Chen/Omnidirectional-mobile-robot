@@ -52,6 +52,14 @@ if(WIN32)
       -ExecutionPolicy Bypass
       -File "${CMAKE_CURRENT_LIST_DIR}/test_g2_low_speed_diagnostic.ps1"
   )
+  add_test(
+    NAME g2_high_pwm_validation
+    COMMAND
+      "${POWERSHELL_EXECUTABLE}"
+      -NoProfile
+      -ExecutionPolicy Bypass
+      -File "${CMAKE_CURRENT_LIST_DIR}/test_g2_high_pwm_validation.ps1"
+  )
 endif()
 
 add_executable(test_app_debug_uart_config

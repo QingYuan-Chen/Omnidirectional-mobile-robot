@@ -11,7 +11,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'g2_low_speed_diagnostic_lib.ps1')
+. (Join-Path $PSScriptRoot 'g2_high_pwm_validation_lib.ps1')
 
 $resolvedCapture = (Resolve-Path -LiteralPath $CaptureDirectory).Path
 $resolvedPlan = (Resolve-Path -LiteralPath $PlanDirectory).Path
@@ -110,6 +110,7 @@ $fullPwmPlateauMs =
 $gates.full_pwm_plateau_meets_plan_minimum =
     ($fullPwmPlateauMs -ge $analysisProfile.minimum_full_pwm_plateau_ms)
 $lowSpeedDiagnostic = $null
+$highPwmDiagnostic = $null
 if ($analysisProfile.low_speed_steady_validation) {
     $lowSpeedDiagnostic = Measure-G2LowSpeedRun `
         -Samples $samples `
@@ -121,6 +122,16 @@ if ($analysisProfile.low_speed_steady_validation) {
             [int]$measurement.Summary.motion_threshold_delay_ms) `
         -ReportedPeakWindowRpm (
             [double]$measurement.Summary.peak_window_wheel_rpm) `
+        -CountsPerWheelRevolution (
+            [int]$manifest.analysis.counts_per_wheel_revolution)
+}
+if ($analysisProfile.high_pwm_steady_validation) {
+    $highPwmDiagnostic = Measure-G2HighPwmRun `
+        -Samples $samples `
+        -ExperimentId ([string]$manifest.experiment_id) `
+        -Direction ([string]$manifest.direction) `
+        -PeakAppliedIndex ([int]$measurement.Summary.peak_applied_index) `
+        -TargetStopIndex ([int]$measurement.Summary.target_stop_index) `
         -CountsPerWheelRevolution (
             [int]$manifest.analysis.counts_per_wheel_revolution)
 }
@@ -142,6 +153,7 @@ $summary = [ordered]@{
     }
     dynamics = $measurement.Summary
     low_speed_diagnostic = $lowSpeedDiagnostic
+    high_pwm_diagnostic = $highPwmDiagnostic
     high_speed_timing = $baseSummary.timing
     telemetry_counter_increments = $baseSummary.telemetry_counter_increments
     gates = $gates

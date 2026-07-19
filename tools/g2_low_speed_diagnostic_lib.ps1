@@ -30,6 +30,7 @@ function Get-G2SingleCaptureAnalysisProfile {
         return [pscustomobject][ordered]@{
             experiment_type = $experimentType
             low_speed_steady_validation = $false
+            high_pwm_steady_validation = $false
             minimum_full_pwm_plateau_ms = 50
         }
     }
@@ -42,6 +43,26 @@ function Get-G2SingleCaptureAnalysisProfile {
         return [pscustomobject][ordered]@{
             experiment_type = $experimentType
             low_speed_steady_validation = $true
+            high_pwm_steady_validation = $false
+            minimum_full_pwm_plateau_ms =
+                [int]$Manifest.analysis.minimum_full_pwm_plateau_ms
+        }
+    }
+    if ($experimentType -ceq 'g2_high_pwm_steady_validation') {
+        [void](Test-G2HighPwmValidationSchedule `
+            -Schedule $Schedule `
+            -Direction ([string]$Manifest.direction))
+        if ([int]$Manifest.peak_pwm -ne 840) {
+            throw '840稳态验证清单的peak_pwm必须为840'
+        }
+        if ($Manifest.analysis.PSObject.Properties.Name -notcontains
+            'minimum_full_pwm_plateau_ms') {
+            throw '840稳态验证清单缺少字段：analysis.minimum_full_pwm_plateau_ms'
+        }
+        return [pscustomobject][ordered]@{
+            experiment_type = $experimentType
+            low_speed_steady_validation = $false
+            high_pwm_steady_validation = $true
             minimum_full_pwm_plateau_ms =
                 [int]$Manifest.analysis.minimum_full_pwm_plateau_ms
         }
