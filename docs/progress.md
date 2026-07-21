@@ -522,3 +522,12 @@
 - 电池范围 11.479-11.541 V，目标/实际 PWM 全程 0；最终 ready=1、inhibit=0、fault=0、motor_state=0、ESTOP=0。通信/溢出/TX fault/队列丢弃/格式/各类型发送失败、控制时序和 ADC 门均为 0；UART TX 队列运行中最大 2、末行回到 0。
 - `RES` 观测到五任务最小栈余量 368/712/432/532/776 B、最小剩余堆 22,616 B，只建立阶段 5 水位证据，不关闭阶段 5。最终 `IMUQ` 为 sequence=787、sensor_timestamp=2341、`dropped_sample_count=1128`，其余读错、连续错误、退避、重复、突变和估计器故障为 0；该非零丢样累计保留为阶段 4/5 的真实 ODR/丢样债务，不阻断阶段 3 遥测传输验收。
 - 阶段 3 据此整阶段完成，当前路线位置进入阶段 4；阶段 4 仍是“软件完成、待总体系统上电板测”，阶段 5-7 未提前关闭。
+
+## 2026-07-21：阶段 4 IMU 高速首轮正式板测被源丢样门拒绝
+
+- 总体系统上电、板上固件 `7aaaeb4`、COM10/USART1。独立纯 `STATUS` 位于 `captures/20260721-150911328_COM10/`：最终电池 11.497 V，PWM 0、ready=1、inhibit/fault/motor_state/ESTOP=0，UART、控制和 ADC 错误为 0；串口开闭边界留下 1 个非遥测行和 128 字符尾残片，因此只作为安全预检，不冒充高速导出证据。
+- `captures/stage4_imu_capture_schedule_20260721.csv` 的 6 条命令依次为 STATUS、START@500、STOP@6000、CAPTURE STATUS@6250、EXPORT@6500、STATUS@25000，无 `ARM/PWM`。正式 `captures/20260721-151011421_COM10/` 为 30 s、155,735 B，608 STAT、304 IMUQ、61 RES、502 IC、5 ICAP，全部解析错误为 0，6 条命令全部发送；全程无运动。
+- ICAP 的 STARTED/STOPPED/STATUS/BEGIN/END 完整，BEGIN/END 均为 COMPLETE、sample=502、capacity=1700、记录器 dropped/duplicate/source_gap=0，导出约 1.92 s 闭合。接受 sequence 15,499 至 16,000 连续，sensor timestamp 38,393 至 39,612、步长 2 至 3；host tick 173,617 至 179,128、每步固定 11 ms。传感器 1,219 步对应 5,437.11 ms，主机 5,511 ms，误差 73.89 ms 小于容差 108.74 ms；STATUS0 502 行全为 3。
+- 严格分析 `accepted=false`，仅 `source_drop_counter_unchanged=false`，其他 12 门全为 true。样本内源丢样 22,230→22,948（+718），整个 30 s `IMUQ dropped_sample_count` 增加 3,969；其余 read/consecutive/backoff/duplicate/spike/estimator fault 均为 0。最终 PWM、安全门及 UART、格式、入队、导出、控制、ADC 错误均为 0。
+- 静置原始均值/标准差：accel X 260.09/4.70、Y 1422.81/4.21、Z 8621.05/6.19；gyro X -40.31/4.07、Y -147.20/4.46、Z 28.59/3.68；temperature 全 0，保留为待查疑点。
+- 只读检查确认 `imuTask` 使用 DRDY 通知加 10 ms 超时兜底，PD7 EXTI 上升沿、回调和原理图 INT1 连线存在。固定 11 ms host delta 强烈说明本轮持续走超时路径，但 DRDY 是未输出、未到达、EXTI 未触发还是通知未消费尚未实测。停止重复相同采集；下一步在零运动条件下分段验证 DRDY 链，修复后只做一次同计划复验。阶段 4 保持未完成，阶段 5-7 不推进。

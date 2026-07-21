@@ -19,6 +19,8 @@
 | `imuTask` | DRDY，10 ms 超时兜底 | AboveNormal | 1536 B | 同步读取 QMI8658A、校验时间戳、SI/机体系转换、6 状态 ESKF、发布有效性快照 |
 | `monitorTask` | 500 ms | Low | 1024 B | 运行灯和任务剩余栈监测，只读取已发布快照，不操作 ADC |
 
+2026-07-21 阶段 4 首轮实采的 502 个接受样本 `host_tick` 间隔全部固定为 11 ms，传感器时间戳每次推进 2 至 3，源丢样在窗口增加 718。该结果与“DRDY 通知 + 10 ms 超时兜底”的预期不符，强烈说明本轮持续从超时路径唤醒；PD7/INT1 的传感器输出、板级到达、EXTI 触发和任务通知消费仍须逐段验证，不能把表中的 DRDY 写成已板测生效。
+
 CMSIS-RTOS2 的 `stack_size` 单位是字节。GCC 静态栈报告中，ESKF 最重单函数为 312 B，`imuTask` 入口为 160 B；`commTask` 因增加协议解析、ADC 和遥测调用链，软件阶段先保守提高到 2048 B。最终必须根据 `osThreadGetStackSpace()` 的实机最小余量再收敛，目标是最坏工况仍保留至少 25% 且不少于 256 B。
 
 当前 `configUSE_PREEMPTION=1`，表中的优先级是抢占优先级。Control 与 Safety 同为 High，Comm 与 IMU 同为 AboveNormal；同优先级任务都必须主动阻塞，不能长时间占用 CPU。

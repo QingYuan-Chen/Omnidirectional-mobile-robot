@@ -175,7 +175,7 @@ $summary = [ordered]@{
         'IC records only AppImu_Process outputs that passed the current acceptance chain.',
         'Rejected spikes, duplicate timestamps and bus failures are visible only through IMUQ counters.',
         'The duration gate compares sensor timestamp steps at configured 224.2 Hz with host ticks using max(10 ms, 2%) tolerance.',
-        'Host millisecond deltas remain quantized; final ODR acceptance still requires a real no-power board capture.'
+        'Host millisecond deltas remain quantized; final ODR acceptance still requires a real powered-system stationary capture.'
     )
 }
 
