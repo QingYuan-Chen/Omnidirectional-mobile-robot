@@ -11,6 +11,7 @@
 
 #define TX_LOG_CAPACITY (16U)
 
+UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart4;
 
@@ -72,8 +73,11 @@ HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *handle)
 
 static void ResetHarness(void)
 {
+  memset(&huart1, 0, sizeof(huart1));
   memset(&huart2, 0, sizeof(huart2));
   memset(&huart4, 0, sizeof(huart4));
+  huart1.gState = HAL_UART_STATE_READY;
+  huart1.RxState = HAL_UART_STATE_READY;
   huart2.gState = HAL_UART_STATE_READY;
   huart2.RxState = HAL_UART_STATE_READY;
   huart4.gState = HAL_UART_STATE_READY;
@@ -104,13 +108,13 @@ static void TestCallbackChainAndImmediateCompletion(void)
   assert(tx_success_count == 1U);
   BspUart_Service();
   assert(tx_success_count == 1U);
-  Complete(&huart4);
+  Complete(&huart1);
   assert(tx_success_count == 2U);
   assert(tx_lengths[0] == sizeof(first));
   assert(tx_lengths[1] == sizeof(second));
   assert(memcmp(tx_frames[0], first, sizeof(first)) == 0);
   assert(memcmp(tx_frames[1], second, sizeof(second)) == 0);
-  Complete(&huart4);
+  Complete(&huart1);
   assert(BspUart_GetStats(BSP_UART_TTL, &stats) == BSP_OK);
   assert(stats.tx_completed_frame_count == 2U);
   assert(stats.tx_queued_frame_count == 0U);
@@ -137,7 +141,7 @@ static void TestBusyErrorQueueFullAndRecovery(void)
   BspUart_Service();
   assert(tx_attempt_count == 2U);
   assert(tx_success_count == 1U);
-  Complete(&huart4);
+  Complete(&huart1);
 
   ResetHarness();
   next_tx_status = HAL_ERROR;
@@ -165,7 +169,7 @@ static void TestBusyErrorQueueFullAndRecovery(void)
            BSP_UART_TTL, frame_a, (uint16_t)sizeof(frame_a)) == BSP_OK);
   assert(BspUart_WriteAsync(
            BSP_UART_TTL, frame_b, (uint16_t)sizeof(frame_b)) == BSP_OK);
-  huart4.gState = HAL_UART_STATE_READY;
+  huart1.gState = HAL_UART_STATE_READY;
   BspUart_Service();
   assert(tx_success_count == 2U);
   assert(tx_frames[0][0] == 0xA1U);
@@ -173,7 +177,7 @@ static void TestBusyErrorQueueFullAndRecovery(void)
   assert(BspUart_GetStats(BSP_UART_TTL, &stats) == BSP_OK);
   assert(stats.tx_completion_recovery_count == 1U);
   assert(stats.tx_queued_frame_count == 1U);
-  Complete(&huart4);
+  Complete(&huart1);
   assert(BspUart_GetStats(BSP_UART_TTL, &stats) == BSP_OK);
   assert(stats.tx_completed_frame_count == 1U);
   assert(stats.tx_queued_frame_count == 0U);
@@ -184,7 +188,7 @@ static void TestSpuriousCompletionAndArguments(void)
   static const uint8_t frame[] = {1U};
   BspUartStats stats;
   ResetHarness();
-  HAL_UART_TxCpltCallback(&huart4);
+  HAL_UART_TxCpltCallback(&huart1);
   assert(BspUart_GetStats(BSP_UART_TTL, &stats) == BSP_OK);
   assert(stats.tx_completion_recovery_count == 1U);
   assert(BspUart_WriteAsync(BSP_UART_COUNT, frame, 1U) == BSP_INVALID_ARG);

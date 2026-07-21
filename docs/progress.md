@@ -506,3 +506,10 @@
 - 既有 G2 捕获、工作点和死区分析入口已把 IMU 行/事件纳入总行数闭合并拒绝 IMU 解析错误；原电机数值字段、历史采集和结论没有改变。
 - 统一主机测试 27/27 通过；PowerShell 7 与 Windows PowerShell 5.1 的串口解析各 55 项断言、IMU 分析各 8 项断言通过，38 个脚本在两个版本下解析错误均为 0。ARM Debug/Release 构建通过：RAM 47,792 B、CCMRAM 61,628 B，Flash 102,836/57,136 B；三个关键 C 文件通过严格告警和 GCC `-fanalyzer`。
 - 本切片没有连接主控板、没有打开 COM6、没有刷板或发送命令，电机动力保持断开。真实 ODR、时间戳步长/回绕、轴向、STATUS0、被拒绝帧与丢样计数、容量和异步导出闭合仍须按 `imu_capture_procedure.md` 做无动力板测；阶段 5 的 DRDY/故障注入/栈堆水位和阶段 6 的 500 ms 超时、Brake/Coast、旧队列失效均未关闭。
+
+## 2026-07-21：阶段 3 无线 DAPLink/USART1 板测开始
+
+- 当前严格位于原十阶段路线的阶段 3。操作者统一硬件状态口径为“总体系统上电/总体系统非上电”，不再按控制板与电机动力分开描述；从本条起的新测试记录采用该口径，历史记录中的旧术语继续按原始条件保留。无论硬件上电方式如何，任何 `ARM/PWM` 运动前仍必须单独执行纯 `STATUS` 并核对电池电压、PWM 0、`motor_state=0`、`runtime_ready`、故障/ESTOP 和全部错误计数。
+- 2026-07-21 在总体系统上电状态下，xPack OpenOCD 通过无线 CMSIS-DAP/SWD 成功识别 STM32F407，并将当前 `81b7355` Debug ELF 完成 program、verify、reset。首次在 DAPLink 虚拟串口 COM10 以 230400/8N1 执行 5 s 纯 `STATUS`，采集结果为 0 字节；失败证据完整保留在 `captures/20260721-143006157_COM10/`，没有发送 `ARM/PWM` 或执行运动。
+- SWD 只读核对确认基线固件仍在 USART2 PD5/PD6 上运行 230400/8N1；随后用“停机、临时配置 USART1 PA9/PA10、发送 `UART1_OK`、复位恢复”的可逆探针确认 COM10 与 STM32 USART1 物理通道可达。该探针只关闭物理连线疑问，不能代替正式固件的 UART 中断、队列、协议与四类遥测验收。
+- 已把集中式人类调试链迁移到无线 DAPLink 对应的 USART1 PA9/PA10，并恢复 USART2 为树莓派正式通信口：新增 USART1 230400/8N1 初始化和中断，`BSP_UART_TTL` 映射到 `huart1`，`app_debug_uart_config.h` 选择 TTL；两份受版本管理的 `.ioc` 均同步 PA9/PA10、USART1 IRQ 和生成顺序，UART4 旧硬件初始化保留但不绑定当前应用逻辑端口。主机测试 27/27、Debug/Release 固件构建和 `git diff --check` 通过。该结果只关闭软件迁移，迁移后的正式提交尚未刷写，阶段 3 状态保持“软件完成、板测进行中”。后续先提交并刷写 USART1 固件，再重新执行独立纯 `STATUS`；通过后做 `STAT/IMUQ/RES/EVENT` 频率、CSV 闭合、持续输出和零错误验收，阶段 4-7 继续冻结。

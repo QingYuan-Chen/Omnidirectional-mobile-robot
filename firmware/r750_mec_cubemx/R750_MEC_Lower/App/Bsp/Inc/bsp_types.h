@@ -38,9 +38,9 @@ typedef enum {
 /*
  * 逻辑串口角色。
  * ROS 对应 USART2，最终用于 STM32 与其直接上位机树莓派之间的正式 X-Protocol 链路；
- * TTL 对应 UART4，最终保留为人类调试口。M2 板测期间，应用配置会临时选择 ROS 逻辑
- * 端口承载电脑直连的 ASCII 命令与遥测；这不改变 M5 的最终角色，也不得与 X-Protocol
- * 同时运行。
+ * TTL 对应 USART1（PA9/PA10），由无线 DAPLink 的虚拟串口承载人类调试命令与遥测；
+ * ROS 对应 USART2，保留给树莓派正式 X-Protocol 链路。UART4 是旧调试硬件通道，当前
+ * 不再绑定应用逻辑端口。ASCII 调试协议与 X-Protocol 分属不同物理串口，不得交换角色。
  */
 typedef enum {
   BSP_UART_ROS = 0,

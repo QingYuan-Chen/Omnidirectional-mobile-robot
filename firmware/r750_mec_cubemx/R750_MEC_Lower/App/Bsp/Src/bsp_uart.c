@@ -272,7 +272,7 @@ BspStatus BspUart_Init(void)
    * 之前已启动端口，避免对上层返回失败后仍有接收中断写入半初始化上下文。
    */
   uart_contexts[BSP_UART_ROS].handle = &huart2;
-  uart_contexts[BSP_UART_TTL].handle = &huart4;
+  uart_contexts[BSP_UART_TTL].handle = &huart1;
   for (uint32_t i = 0; i < BSP_UART_COUNT; ++i) {
     BspUartContext *context = &uart_contexts[i];
     BspUart_ResetContext(context);

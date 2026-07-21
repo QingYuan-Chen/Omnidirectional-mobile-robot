@@ -33,7 +33,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\capture_serial.p
 
 `-Port` 与 `-FirmwareCommit` 均为必填项。默认配置是 230400 baud、8N1、无流控、DTR/RTS 关闭；`-SendStatusAtStart` 会在采集开始时发送一条 `STATUS` 并把实际发送时刻写入 `commands.csv`。
 
-默认安全模式只允许 `STATUS`。这使无动力通信验收不会因为计划文件内容错误而发送运动命令。
+默认安全模式只允许 `STATUS`。这使总体系统上电的通信验收不会因为计划文件内容错误而发送运动命令。
 
 新固件收到 `STATUS` 后调度一帧即时 `STAT`；若同时存在到期 `EVENT`，事件先发送且强制
 状态请求保持到后续通信循环。`STAT` 仍包含纯状态安全门需要的电池毫伏、目标/实际 PWM、
@@ -164,5 +164,8 @@ IMU 健康和 int16 PWM 范围。
 
 当前统一主机测试为 27/27；串口解析在 PowerShell 7 和 Windows PowerShell 5.1 下均为
 55 项断言通过，IMU 高速分析专项在两个版本下均为 8 项断言通过。测试不需要连接开发板；
-真正的 USART2 周期、`STATUS` 响应、四类低频行数、IMU 实际 ODR/时间戳/STATUS0、队列
-失败计数和原始字节保存仍必须通过无动力实机采集验收。
+真正的调试 UART 周期、`STATUS` 响应、四类低频行数、IMU 实际 ODR/时间戳/STATUS0、队列
+失败计数和原始字节保存仍必须通过总体系统上电实机采集验收。2026-07-21 起阶段 3 调试 UART
+为无线 DAPLink 对应的 USART1 PA9/PA10、Windows 端口 COM10；USART2 恢复为树莓派正式通信口。
+首个 COM10 纯 `STATUS` 因基线固件仍选择 USART2 而得到 0 字节，失败证据位于
+`captures/20260721-143006157_COM10/`，不得删除或用迁移后的成功采集覆盖。

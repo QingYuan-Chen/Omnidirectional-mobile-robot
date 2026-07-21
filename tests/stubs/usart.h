@@ -31,6 +31,7 @@ typedef struct {
 
 #define __HAL_UART_CLEAR_PEFLAG(handle) ((void)(handle))
 
+extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart4;
 

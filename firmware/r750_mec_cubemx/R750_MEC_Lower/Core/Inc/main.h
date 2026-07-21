@@ -89,6 +89,10 @@ void Error_Handler(void);
 #define UART4_TX_TTL_GPIO_Port GPIOC
 #define UART4_RX_TTL_Pin GPIO_PIN_11
 #define UART4_RX_TTL_GPIO_Port GPIOC
+#define USART1_TX_DAP_Pin GPIO_PIN_9
+#define USART1_TX_DAP_GPIO_Port GPIOA
+#define USART1_RX_DAP_Pin GPIO_PIN_10
+#define USART1_RX_DAP_GPIO_Port GPIOA
 #define USART2_TX_ROS_Pin GPIO_PIN_5
 #define USART2_TX_ROS_GPIO_Port GPIOD
 #define USART2_RX_ROS_Pin GPIO_PIN_6
