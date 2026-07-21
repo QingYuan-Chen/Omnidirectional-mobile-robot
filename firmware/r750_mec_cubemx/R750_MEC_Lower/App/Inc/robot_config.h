@@ -70,13 +70,15 @@
 
 /*
  * IMU 采样、标定与质量管理参数。
- * 5 ms 是候选处理基础周期，不替代芯片时间戳；IMU 任务实际等待超时为其两倍，即 10 ms。
+ * 当前 H60 原理图只把 QMI8658A INT1 接到 MCU，而芯片普通 DRDY 固定从 INT2 输出，
+ * 因此任务使用 3 ms 固定周期轮询锁存状态。该周期快于 224.2 Hz 的约 4.46 ms 数据周期，
+ * 无新帧时 BSP_BUSY 是正常结果；最终采样时长仍只以芯片时间戳为准。
  * ODR、量程换算必须与 QMI8658A CTRL2/CTRL3
  * 配置一致。20 Hz 输出低通、15 m/s² 与 10 rad/s 突变门限、连续 3 次升级和 8 个稳定
  * 样本恢复均为软件候选值；M1.3 已延期到 M2 单电机阶段，届时需结合静止噪声、运动日志
  * 和故障注入确定。输出低通不得用于 ESKF 输入。
  */
-#define ROBOT_CONFIG_IMU_PERIOD_MS                (5U)
+#define ROBOT_CONFIG_IMU_POLL_PERIOD_MS           (3U)
 #define ROBOT_CONFIG_IMU_ODR_HZ                   (224.2f)
 #define ROBOT_CONFIG_IMU_ACCEL_LSB_PER_G          (8192.0f)
 #define ROBOT_CONFIG_IMU_GYRO_LSB_PER_DPS         (64.0f)

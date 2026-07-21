@@ -35,7 +35,7 @@
 #define BSP_IMU_CTRL9_ACK_VALUE    (0x00U)
 #define BSP_IMU_CTRL9_AHB_VALUE    (0x12U)
 
-#define BSP_IMU_CTRL1_VALUE (0x50U)
+#define BSP_IMU_CTRL1_VALUE (0x40U)
 #define BSP_IMU_CTRL2_VALUE (0x15U)
 #define BSP_IMU_CTRL3_VALUE (0x55U)
 #define BSP_IMU_CTRL5_VALUE (0x77U)
@@ -51,9 +51,10 @@
 #define BSP_IMU_LOCK_TIMEOUT_MS  (2U)
 
 /*
- * CTRL1 配置地址自动递增与中断行为，CTRL2/CTRL3 选择加速度/陀螺量程和 ODR，CTRL5
- * 配置芯片内部滤波，CTRL7 最后统一启用传感器。寄存器常量来自当前硬件方案，修改时需
- * 对照数据手册并同步上层 LSB 换算，不能只改其中一侧。
+ * CTRL1 只启用地址自动递增，不驱动未连接的 INT2：QMI8658A 普通 DRDY 固定从 INT2
+ * 输出，而当前 H60 只把 INT1 接到 MCU，应用层因此按固定周期轮询锁存状态。CTRL2/CTRL3
+ * 选择加速度/陀螺量程和 ODR，CTRL5 配置芯片内部滤波，CTRL7 最后统一启用传感器。
+ * 寄存器常量来自当前硬件方案，修改时需对照数据手册并同步上层 LSB 换算。
  */
 
 static BspStatus BspImu_FromHal(HAL_StatusTypeDef status)

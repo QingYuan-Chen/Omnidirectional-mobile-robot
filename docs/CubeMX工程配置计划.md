@@ -175,7 +175,7 @@ D:\STM32CubeCLT_1.20.0\CMake\bin\cmake.exe --build --preset Debug
 |---|---|
 | I2C SCL | PB6 |
 | I2C SDA | PB7 |
-| INT | PD7 |
+| QMI8658A INT1（当前不作 DRDY，普通输入下拉） | PD7 |
 
 建议:
 
@@ -184,8 +184,9 @@ D:\STM32CubeCLT_1.20.0\CMake\bin\cmake.exe --build --preset Debug
 - QMI8658A 地址按原厂源码先使用 `0x6A`。
 - 加速度量程: +/-4g。
 - 陀螺仪量程: +/-512 dps。
-- ODR: 500 Hz。
-- 下位机任务中 50 Hz 读取并回传，内部可保留更高采样空间。
+- 当前 ODR: 224.2 Hz。
+- QMI8658A 普通 DRDY 固定从 INT2 输出，但 H60 只把 INT1 接到 PD7；因此不启用 PD7 EXTI，不把 INT1 冒充 DRDY。INT2 输出驱动关闭，PD7 配置为带下拉的普通输入。
+- `imuTask` 使用 3 ms `vTaskDelayUntil` 绝对周期轮询 STATUSINT/SyncSample 锁存帧；无新帧的 `BSP_BUSY` 是正常结果。低频 `IMUQ` 遥测与高速内部采样是两条不同链路，不得用遥测频率代替采样频率。
 
 ### 电池电压 ADC
 

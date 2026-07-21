@@ -531,3 +531,11 @@
 - 严格分析 `accepted=false`，仅 `source_drop_counter_unchanged=false`，其他 12 门全为 true。样本内源丢样 22,230→22,948（+718），整个 30 s `IMUQ dropped_sample_count` 增加 3,969；其余 read/consecutive/backoff/duplicate/spike/estimator fault 均为 0。最终 PWM、安全门及 UART、格式、入队、导出、控制、ADC 错误均为 0。
 - 静置原始均值/标准差：accel X 260.09/4.70、Y 1422.81/4.21、Z 8621.05/6.19；gyro X -40.31/4.07、Y -147.20/4.46、Z 28.59/3.68；temperature 全 0，保留为待查疑点。
 - 只读检查确认 `imuTask` 使用 DRDY 通知加 10 ms 超时兜底，PD7 EXTI 上升沿、回调和原理图 INT1 连线存在。固定 11 ms host delta 强烈说明本轮持续走超时路径，但 DRDY 是未输出、未到达、EXTI 未触发还是通知未消费尚未实测。停止重复相同采集；下一步在零运动条件下分段验证 DRDY 链，修复后只做一次同计划复验。阶段 4 保持未完成，阶段 5-7 不推进。
+
+## 2026-07-21：阶段 4 DRDY 端点不匹配定位与轮询修复软件完成
+
+- 在保留首轮拒绝证据不改写的前提下，进一步目视核对 QMI8658A 数据手册原页和 H60 原理图：芯片普通 DRDY 固定从 INT2 输出；当前图纸只把 INT1 接到 MCU PD7。旧固件 `CTRL1=0x50` 启用 INT2 push-pull、保持 INT1 High-Z，`CTRL7=0x83` 启用 SyncSample 和 DRDY，因此 PD7 不可能收到普通 DRDY。首轮固定 11 ms 唤醒和持续走 10 ms 超时兜底的原因由此定位为传感器中断端点与板级连线不匹配，不是 QMI8658A 损坏或 PCB 断线结论，也无需先扩展 EXTI/线程通知计数才能解释。
+- 软件修复保持 `CTRL7=0x83` 的 SyncSample 锁存读取，把 `CTRL1` 改为 `0x40` 以关闭未连接的 INT2 输出；`imuTask` 改用 3 ms `vTaskDelayUntil` 绝对周期轮询 STATUSINT/锁存帧，快于 224.2 Hz 的约 4.46 ms 数据周期，`BSP_BUSY` 继续表示正常无新帧。旧线程标志、`osThreadFlagsWait` 和 `HAL_GPIO_EXTI_Callback` 已移除。
+- 两份受版本管理的 `.ioc` 与生成代码同步把 PD7 从 NOPULL 上升沿 EXTI 改为下拉普通输入，关闭 EXTI9_5 NVIC 并移除 handler、声明和 `main.h` 中的 EXTI 宏，避免未驱动 INT1 的浮空中断和误导语义。
+- 统一主机测试 27/27、Debug/Release 构建各 72/72、`app_tasks.c`/`bsp_imu.c` 严格告警和 GCC `-fanalyzer`、`git diff --check` 均通过。当前资源为 RAM 47,864 B、CCMRAM 61,628 B，Debug/Release Flash 101,608/56,292 B。
+- 当前状态仅为“阶段 4 修复软件完成、待总体系统上电零运动单次复验”。下一步先刷写修复固件并执行独立纯 `STATUS`，确认 PWM 0、`motor_state=0`、ready、无故障/ESTOP 和全部错误计数，再按既有计划静置采集 5 至 6 s；全程不发送 `ARM/PWM`。只有严格分析确认源丢样不增加、接受时间戳步长和约 224.2 Hz 频率合理、记录器/串口/导出仍闭合后才可关闭阶段 4。阶段 5-7 不推进。

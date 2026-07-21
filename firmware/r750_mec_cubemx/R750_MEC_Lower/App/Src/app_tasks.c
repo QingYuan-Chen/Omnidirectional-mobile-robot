@@ -41,7 +41,6 @@
 #define APP_EVENT_IMU_HEARTBEAT     (1UL << 3U)
 #define APP_EVENT_CRITICAL_HEARTBEATS \
   (APP_EVENT_CONTROL_HEARTBEAT | APP_EVENT_COMM_HEARTBEAT | APP_EVENT_IMU_HEARTBEAT)
-#define APP_IMU_THREAD_FLAG_DATA_READY (1UL << 0U)
 #define APP_CAPTURE_EVENT_QUEUE_DEPTH (4U)
 
 #define APP_CONTROL_STACK_BYTES (1536U)
@@ -1676,13 +1675,13 @@ static void AppTasks_Imu(void *argument)
     AppTasks_FailCurrentThread();
   }
 
+  TickType_t last_wake = xTaskGetTickCount();
   for (;;) {
     /*
-     * 数据就绪外部中断通常触发立即处理；两倍任务周期的超时保证即使 EXTI 丢失或处于
-     * 非阻塞退避，任务仍周期醒来刷新 sample_age_ms、健康状态与任务心跳。
+     * QMI8658A 普通 DRDY 固定从 INT2 输出，而当前 H60 只把 INT1 接到 MCU，不能把 PD7
+     * 当作 DRDY。以快于 224.2 Hz 数据周期的固定节拍轮询 STATUSINT/锁存帧；BSP_BUSY
+     * 只表示本次尚无新帧，任务仍刷新 sample_age_ms、健康状态与心跳。
      */
-    (void)osThreadFlagsWait(
-      APP_IMU_THREAD_FLAG_DATA_READY, osFlagsWaitAny, pdMS_TO_TICKS(ROBOT_CONFIG_IMU_PERIOD_MS * 2U));
     AppImuOutput output;
     const uint32_t now_ms = HAL_GetTick();
     const BspStatus status = AppImu_Process(now_ms, &output);
@@ -1740,14 +1739,7 @@ static void AppTasks_Imu(void *argument)
      */
     (void)osEventFlagsSet(runtime_events, APP_EVENT_IMU_HEARTBEAT);
     (void)status;
-  }
-}
-
-void HAL_GPIO_EXTI_Callback(uint16_t gpio_pin)
-{
-  /* EXTI 只置线程标志，不在中断中访问 I2C 或运行 ESKF；任务尚未创建时安全忽略早期中断。 */
-  if (gpio_pin == IMU_INT_Pin && task_handles[APP_TASK_IMU] != NULL) {
-    (void)osThreadFlagsSet(task_handles[APP_TASK_IMU], APP_IMU_THREAD_FLAG_DATA_READY);
+    vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(ROBOT_CONFIG_IMU_POLL_PERIOD_MS));
   }
 }
 

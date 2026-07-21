@@ -99,7 +99,6 @@ void Error_Handler(void);
 #define USART2_RX_ROS_GPIO_Port GPIOD
 #define IMU_INT_Pin GPIO_PIN_7
 #define IMU_INT_GPIO_Port GPIOD
-#define IMU_INT_EXTI_IRQn EXTI9_5_IRQn
 #define ENC_MA_B_Pin GPIO_PIN_3
 #define ENC_MA_B_GPIO_Port GPIOB
 #define ENC_MB_A_Pin GPIO_PIN_4

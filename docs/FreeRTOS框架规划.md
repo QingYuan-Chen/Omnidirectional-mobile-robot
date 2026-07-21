@@ -16,10 +16,10 @@
 | `controlTask` | TIM7 候选 1 kHz | High | 1536 B | 等待硬件直接通知、消费四路编码器序号快照、记录时序诊断并推进 MA 安全开环状态机 |
 | `safetyTask` | 100 ms | High | 1024 B | 原子清点关键心跳、发布运动禁止、普通 Coast 覆盖、锁存故障并触发 Emergency Coast |
 | `commTask` | 2 ms | AboveNormal | 2048 B | UART 接收/恢复、临时协议、命令分发、非阻塞 TX 服务；每 20 ms 采集电池并发布遥测 |
-| `imuTask` | DRDY，10 ms 超时兜底 | AboveNormal | 1536 B | 同步读取 QMI8658A、校验时间戳、SI/机体系转换、6 状态 ESKF、发布有效性快照 |
+| `imuTask` | 3 ms 绝对周期轮询 | AboveNormal | 1536 B | 轮询 STATUSINT、同步读取 QMI8658A 锁存帧、校验时间戳、SI/机体系转换、6 状态 ESKF、发布有效性快照 |
 | `monitorTask` | 500 ms | Low | 1024 B | 运行灯和任务剩余栈监测，只读取已发布快照，不操作 ADC |
 
-2026-07-21 阶段 4 首轮实采的 502 个接受样本 `host_tick` 间隔全部固定为 11 ms，传感器时间戳每次推进 2 至 3，源丢样在窗口增加 718。该结果与“DRDY 通知 + 10 ms 超时兜底”的预期不符，强烈说明本轮持续从超时路径唤醒；PD7/INT1 的传感器输出、板级到达、EXTI 触发和任务通知消费仍须逐段验证，不能把表中的 DRDY 写成已板测生效。
+2026-07-21 阶段 4 首轮实采的 502 个接受样本 `host_tick` 间隔全部固定为 11 ms，传感器时间戳每次推进 2 至 3，源丢样在窗口增加 718。该历史结果保留。随后目视核对 QMI8658A 数据手册原页和 H60 图纸，确认普通 DRDY 固定从 INT2 输出，而硬件只把 INT1 接到 PD7；旧 `CTRL1=0x50`、`CTRL7=0x83` 启用未连接 INT2 的输出并让 INT1 High-Z，故任务只能走 10 ms 超时兜底。修复保持 SyncSample 锁存读取，关闭 INT2 输出，改为 3 ms `vTaskDelayUntil` 绝对周期轮询；PD7 改为下拉普通输入并关闭 EXTI9_5。该修复已通过离线验证，但尚待一次总体系统上电、零运动复验，不能把阶段 4 写成完成。
 
 CMSIS-RTOS2 的 `stack_size` 单位是字节。GCC 静态栈报告中，ESKF 最重单函数为 312 B，`imuTask` 入口为 160 B；`commTask` 因增加协议解析、ADC 和遥测调用链，软件阶段先保守提高到 2048 B。最终必须根据 `osThreadGetStackSpace()` 的实机最小余量再收敛，目标是最坏工况仍保留至少 25% 且不少于 256 B。
 

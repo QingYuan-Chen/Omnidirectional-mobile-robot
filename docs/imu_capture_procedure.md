@@ -71,17 +71,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - 整个 30 s `IMUQ dropped_sample_count` 增加 3,969；read/consecutive/backoff/duplicate/spike/estimator fault 均为 0。静置原始均值/标准差为 accel X 260.09/4.70、Y 1422.81/4.21、Z 8621.05/6.19，gyro X -40.31/4.07、Y -147.20/4.46、Z 28.59/3.68；temperature 全为 0，作为待查疑点保留。最终安全门、UART、格式、入队、导出、控制和 ADC 错误均为 0。
 - 只读定位发现 `imuTask` 等待 DRDY、10 ms 超时兜底，而全部接受样本主机间隔固定为 11 ms。结合传感器时间戳每次推进 2 至 3，证据强烈指向任务持续从超时路径唤醒，而不是由 DRDY 及时唤醒；PD7 EXTI 上升沿、回调和原理图 INT1 连线的软件/图纸配置虽存在，但 DRDY 是否由 QMI8658A 正确输出并到达 MCU 尚未实测，不能提前定论为单一硬件故障。
 
+上述一条保留首轮结束时的证据边界。随后目视核对 QMI8658A 数据手册原页和 H60 图纸，已确认普通 DRDY 固定从 INT2 输出，而图纸仅把 INT1 接到 PD7；旧配置 `CTRL1=0x50`、`CTRL7=0x83` 启用未连接的 INT2 输出并让 INT1 保持 High-Z。因此首轮 11 ms 周期已定位为端点不匹配导致的 10 ms 超时兜底，不是芯片或板线损坏。修复软件改为 `CTRL1=0x40`、3 ms 绝对周期轮询 STATUSINT/SyncSample 锁存帧，删除 thread flag/EXTI callback，并把 PD7 改为下拉普通输入、关闭 EXTI9_5；当前尚未刷写复验。
+
 ## 下一次总体系统上电复验
 
-停止重复相同采集。先在不运动条件下修复并验证 DRDY 链，再只复测一次：
+停止重复相同采集。端点不匹配的软件修复已完成，只在总体系统上电、零运动条件下复测一次：
 
-1. 在总体系统上电状态下确认 QMI8658A INT1/DRDY 输出配置、PD7 电平/边沿、EXTI 计数和任务通知计数，区分“传感器未输出”“信号未到达”“EXTI 未触发”“通知未消费”。
+1. 刷写并校验本次修复固件；不再等待或测量 PD7/INT1 的普通 DRDY，因为该端点在现有硬件上不成立。
 2. 先做独立纯 `STATUS`，核对 PWM 0、`motor_state=0`、ready、无故障/ESTOP 和全部错误计数。
 3. 清除 COM10 旧积压并等待在途帧排净；静置采集约 5 至 6 s：`CAPTURE IMU START` 后等待，再 `STOP`、`CAPTURE IMU STATUS`、`EXPORT`；全程不得发送 `ARM/PWM`。
-4. 检查 `ICAP BEGIN/END`、真实接受频率、24 位时间戳回绕/步长、STATUS0、轴向和静止原始值；核对 `IMUQ` 中被拒绝帧与错误计数。
-5. 运行严格分析器，确认无解析错误、无记录器/源丢样、无接受序号断点、时长一致且导出闭合。
+4. 检查 `ICAP BEGIN/END`、接近 224.2 Hz 的真实接受频率、传感器时间戳步长、STATUS0、轴向和静止原始值；核对 `IMUQ` 中被拒绝帧与错误计数。时间戳回绕若本次短窗未发生，继续保留到后续长时板测，不得伪写完成。
+5. 运行严格分析器，确认无解析错误、无记录器/源丢样、无接受序号断点、时长一致且导出闭合。若仍有源丢样，不连续追加相同测试，先复核 3 ms 调度与 I2C/任务执行时序。
 
-只有复验严格门全部通过后，阶段 4 才能从“软件完成、板测被源丢样阻断”改为整阶段完成。阶段 3
+只有复验严格门全部通过后，阶段 4 才能从“修复软件完成、待单次总体系统上电零运动复验”改为整阶段完成。阶段 3
 低频分型遥测已经完成；阶段 5 的故障注入/栈堆水位和阶段 6 的 500 ms 超时、
 Brake/Coast/旧队列失效仍是独立债务，不能由本次 IMU 记录器代替。
 
@@ -91,7 +93,7 @@ Brake/Coast/旧队列失效仍是独立债务，不能由本次 IMU 记录器代
 - 串口解析：PowerShell 7 与 Windows PowerShell 5.1 各 55 项断言。
 - IMU 分析专项：两个 PowerShell 版本各 8 项断言。
 - 38 个 PowerShell 脚本：两个版本解析错误均为 0。
-- ARM Debug/Release 构建通过：RAM 47,792 B，CCMRAM 61,628 B；Flash
-  102,836/57,136 B。
-- `app_comm_protocol.c`、`app_imu_capture.c`、`app_tasks.c` 通过严格告警与
+- DRDY 端点修复后 ARM Debug/Release 构建各 72/72 通过：RAM 47,864 B，CCMRAM 61,628 B；Flash
+  101,608/56,292 B。
+- `app_comm_protocol.c`、`app_imu_capture.c`、`app_tasks.c`、`bsp_imu.c` 通过严格告警与
   GCC `-fanalyzer`。
