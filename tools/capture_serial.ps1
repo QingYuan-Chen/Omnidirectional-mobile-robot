@@ -66,6 +66,7 @@ $imuCaptureEventsPath = Join-Path $captureDirectory 'imu_capture_events.csv'
 $commandsPath = Join-Path $captureDirectory 'commands.csv'
 $metadataPath = Join-Path $captureDirectory 'metadata.json'
 $utf8WithoutBom = [Text.UTF8Encoding]::new($false)
+$serialReadBufferBytes = 65536
 
 $serial = [IO.Ports.SerialPort]::new(
     $Port,
@@ -76,6 +77,7 @@ $serial = [IO.Ports.SerialPort]::new(
 $serial.Handshake = [IO.Ports.Handshake]::None
 $serial.ReadTimeout = 100
 $serial.WriteTimeout = 500
+$serial.ReadBufferSize = $serialReadBufferBytes
 $serial.DtrEnable = $false
 $serial.RtsEnable = $false
 $serial.Encoding = [Text.Encoding]::ASCII
@@ -540,6 +542,7 @@ try {
             parity = 'None'
             stop_bits = 1
             handshake = 'None'
+            read_buffer_bytes = $serialReadBufferBytes
             dtr_enabled = $false
             rts_enabled = $false
         }

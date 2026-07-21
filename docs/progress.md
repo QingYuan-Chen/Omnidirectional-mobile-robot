@@ -539,3 +539,10 @@
 - 两份受版本管理的 `.ioc` 与生成代码同步把 PD7 从 NOPULL 上升沿 EXTI 改为下拉普通输入，关闭 EXTI9_5 NVIC 并移除 handler、声明和 `main.h` 中的 EXTI 宏，避免未驱动 INT1 的浮空中断和误导语义。
 - 统一主机测试 27/27、Debug/Release 构建各 72/72、`app_tasks.c`/`bsp_imu.c` 严格告警和 GCC `-fanalyzer`、`git diff --check` 均通过。当前资源为 RAM 47,864 B、CCMRAM 61,628 B，Debug/Release Flash 101,608/56,292 B。
 - 当前状态仅为“阶段 4 修复软件完成、待总体系统上电零运动单次复验”。下一步先刷写修复固件并执行独立纯 `STATUS`，确认 PWM 0、`motor_state=0`、ready、无故障/ESTOP 和全部错误计数，再按既有计划静置采集 5 至 6 s；全程不发送 `ARM/PWM`。只有严格分析确认源丢样不增加、接受时间戳步长和约 224.2 Hz 频率合理、记录器/串口/导出仍闭合后才可关闭阶段 4。阶段 5-7 不推进。
+
+## 2026-07-21：阶段 4 轮询修复板端通过、主机 4 KiB 缓冲阻断导出
+
+- 提交 `3c6a714` 已通过无线 DAPLink 完成 program、verify、reset。纯 `STATUS` 证据 `captures/20260721-153329990_COM10/` 为 19,989 B、108/54/11 条 STAT/IMUQ/RES，所有解析、非遥测和尾残片计数为 0；电池 11.497 V，PWM/`motor_state` 为 0，ready=1，无 inhibit/fault/ESTOP 及 UART、控制、ADC 错误。5 s 内 IMU sequence 3,536→4,714、timestamp 3,962→5,140，源丢样始终为 0。
+- 复验 `captures/20260721-153409644_COM10/` 的板端 STOP/STATUS/BEGIN 均报告 1,224 样本、容量 1,700，记录器 dropped/duplicate/source_gap 均为 0；30 s IMUQ 源丢样及其他 IMU 错误也始终为 0。因此 3 ms 轮询已经关闭原先的源丢样问题。
+- 本轮主机只保存 691 条有效 IC 和 4 条 ICAP，缺少 END，并出现 STAT/IC 解析错误、1 个非遥测行和 64 字符尾残片。原始索引在 297→404、501→648、747→836、936→1055 处发生四段整块缺失，末端还有 IC/STAT 拼接；严格分析据此 `accepted=false`。板端 UART、TX fault、格式、入队和导出错误均为 0。
+- Windows `SerialPort` 默认 `ReadBufferSize` 实测只有 4,096 B，无法吸收 1,224 行高速导出期间 PowerShell 实时解析造成的积压。主机工具已把接收缓冲固定为 65,536 B，并写入 `metadata.serial.read_buffer_bytes`；PowerShell 7/5.1 串口测试各 55 项和脚本解析通过。该失败证据完整保留；下一次是针对主机缓冲修复的有界复验，不是无修改地连续追加相同测试。阶段 4 仍未完成，阶段 5-7 不推进。
