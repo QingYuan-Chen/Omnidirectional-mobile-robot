@@ -26,6 +26,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'serial_capture_lib.ps1')
+. (Join-Path $PSScriptRoot 'serial_capture_raw.ps1')
 
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
@@ -52,6 +53,7 @@ if (Test-Path -LiteralPath $captureDirectory) {
 [void][IO.Directory]::CreateDirectory($captureDirectory)
 
 $rawPath = Join-Path $captureDirectory 'raw_uart.log'
+$rawTimingPath = Join-Path $captureDirectory 'raw_chunk_timing.bin'
 $telemetryPath = Join-Path $captureDirectory 'telemetry.csv'
 $statPath = Join-Path $captureDirectory 'stat.csv'
 $imuqPath = Join-Path $captureDirectory 'imuq.csv'
@@ -83,6 +85,8 @@ $serial.RtsEnable = $false
 $serial.Encoding = [Text.Encoding]::ASCII
 
 $rawStream = $null
+$rawTimingStream = $null
+$rawTimingWriter = $null
 $telemetryWriter = $null
 $statWriter = $null
 $imuqWriter = $null
@@ -96,12 +100,16 @@ $imuCaptureWriter = $null
 $imuCaptureEventsWriter = $null
 $commandsWriter = $null
 $stopwatch = [Diagnostics.Stopwatch]::new()
-$pendingText = [Text.StringBuilder]::new()
 $startedUtc = [DateTimeOffset]::UtcNow
 $endedUtc = $startedUtc
+$actualDurationMs = [uint64]0
+$offlineParseDurationMs = [uint64]0
 $outcome = 'failed'
 $failureMessage = $null
 $rawByteCount = [uint64]0
+$rawTimingRecordCount = [uint64]0
+$endDrainByteCount = [uint64]0
+$trailingPartialCharacterCount = [uint64]0
 $completeLineCount = [uint64]0
 $telemetryRowCount = [uint64]0
 $telemetryParseErrorCount = [uint64]0
@@ -133,6 +141,12 @@ try {
         [IO.FileMode]::CreateNew,
         [IO.FileAccess]::Write,
         [IO.FileShare]::Read)
+    $rawTimingStream = [IO.File]::Open(
+        $rawTimingPath,
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::Read)
+    $rawTimingWriter = [IO.BinaryWriter]::new($rawTimingStream)
     $telemetryWriter = [IO.StreamWriter]::new($telemetryPath, $false, $utf8WithoutBom)
     $statWriter = [IO.StreamWriter]::new($statPath, $false, $utf8WithoutBom)
     $imuqWriter = [IO.StreamWriter]::new($imuqPath, $false, $utf8WithoutBom)
@@ -243,24 +257,66 @@ try {
         }
         $rawStream.Write($readBuffer, 0, $readCount)
         $rawByteCount += [uint64]$readCount
-        [void]$pendingText.Append([Text.Encoding]::ASCII.GetString($readBuffer, 0, $readCount))
+        $chunkReceivedUtc = [DateTimeOffset]::UtcNow
+        $chunkElapsedMs = [uint64]$stopwatch.ElapsedMilliseconds
+        $rawTimingWriter.Write([uint64]$rawByteCount)
+        $rawTimingWriter.Write($chunkElapsedMs)
+        $rawTimingWriter.Write([int64]$chunkReceivedUtc.UtcDateTime.Ticks)
+        $rawTimingRecordCount++
+    }
 
-        while ($true) {
-            $pendingSnapshot = $pendingText.ToString()
-            $lineEnd = $pendingSnapshot.IndexOf("`n", [StringComparison]::Ordinal)
-            if ($lineEnd -lt 0) {
-                break
+    $actualDurationMs = [uint64]$stopwatch.ElapsedMilliseconds
+    $endedUtc = [DateTimeOffset]::UtcNow
+    $stopwatch.Stop()
+    $endDrainRemaining = [int]$serial.BytesToRead
+    while ($endDrainRemaining -gt 0) {
+        $requested = [Math]::Min($endDrainRemaining, $readBuffer.Length)
+        $readCount = $serial.Read($readBuffer, 0, $requested)
+        if ($readCount -le 0) {
+            break
+        }
+        $rawStream.Write($readBuffer, 0, $readCount)
+        $rawByteCount += [uint64]$readCount
+        $endDrainByteCount += [uint64]$readCount
+        $rawTimingWriter.Write([uint64]$rawByteCount)
+        $rawTimingWriter.Write($actualDurationMs)
+        $rawTimingWriter.Write([int64]$endedUtc.UtcDateTime.Ticks)
+        $rawTimingRecordCount++
+        $endDrainRemaining -= $readCount
+    }
+    if ($serial.IsOpen) {
+        $serial.Close()
+    }
+    $rawStream.Flush()
+    $rawStream.Dispose()
+    $rawStream = $null
+    $rawTimingWriter.Flush()
+    $rawTimingWriter.Dispose()
+    $rawTimingWriter = $null
+    $rawTimingStream = $null
+
+    $offlineParseStopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $parsedTimingRecordCount = [uint64]0
+    Read-SerialCaptureRawLine -RawPath $rawPath -TimingPath $rawTimingPath |
+        ForEach-Object {
+            $lineRecord = $_
+            if ($lineRecord.kind -ceq 'summary') {
+                $trailingPartialCharacterCount =
+                    [uint64]$lineRecord.trailing_partial_characters
+                $parsedTimingRecordCount = [uint64]$lineRecord.timing_records
+                return
             }
 
-            $line = $pendingSnapshot.Substring(0, $lineEnd).TrimEnd([char]13)
-            [void]$pendingText.Remove(0, $lineEnd + 1)
+            $line = [string]$lineRecord.line
+            $lineCaptureElapsedMs = [uint64]$lineRecord.capture_elapsed_ms
+            $lineHostReceivedUtc = [string]$lineRecord.host_received_utc
             $completeLineCount++
             if ($line.StartsWith('T,', [StringComparison]::Ordinal)) {
                 try {
                     $telemetry = ConvertFrom-AppTelemetryLine -Line $line
                     $rowValues = @(
-                        [uint64]$stopwatch.ElapsedMilliseconds,
-                        [DateTimeOffset]::UtcNow.ToString('O')
+                        $lineCaptureElapsedMs,
+                        $lineHostReceivedUtc
                     )
                     foreach ($column in (Get-AppTelemetryColumnNames)) {
                         $rowValues += $telemetry.$column
@@ -270,14 +326,14 @@ try {
                 } catch {
                     $telemetryParseErrorCount++
                 }
-                continue
+                return
             }
             if ($line.StartsWith('STAT,', [StringComparison]::Ordinal)) {
                 try {
                     $stat = ConvertFrom-AppStatLine -Line $line
                     $rowValues = @(
-                        [uint64]$stopwatch.ElapsedMilliseconds,
-                        [DateTimeOffset]::UtcNow.ToString('O')
+                        $lineCaptureElapsedMs,
+                        $lineHostReceivedUtc
                     )
                     foreach ($column in (Get-AppTelemetryColumnNames)) {
                         $rowValues += $stat.$column
@@ -290,14 +346,14 @@ try {
                 } catch {
                     $statParseErrorCount++
                 }
-                continue
+                return
             }
             if ($line.StartsWith('IMUQ,', [StringComparison]::Ordinal)) {
                 try {
                     $imuq = ConvertFrom-AppImuqLine -Line $line
                     $rowValues = @(
-                        [uint64]$stopwatch.ElapsedMilliseconds,
-                        [DateTimeOffset]::UtcNow.ToString('O')
+                        $lineCaptureElapsedMs,
+                        $lineHostReceivedUtc
                     )
                     foreach ($column in (Get-AppImuqColumnNames)) {
                         $rowValues += $imuq.$column
@@ -308,14 +364,14 @@ try {
                 } catch {
                     $imuqParseErrorCount++
                 }
-                continue
+                return
             }
             if ($line.StartsWith('RES,', [StringComparison]::Ordinal)) {
                 try {
                     $resource = ConvertFrom-AppResourceLine -Line $line
                     $rowValues = @(
-                        [uint64]$stopwatch.ElapsedMilliseconds,
-                        [DateTimeOffset]::UtcNow.ToString('O')
+                        $lineCaptureElapsedMs,
+                        $lineHostReceivedUtc
                     )
                     foreach ($column in (Get-AppResourceColumnNames)) {
                         $rowValues += $resource.$column
@@ -326,14 +382,14 @@ try {
                 } catch {
                     $resourceParseErrorCount++
                 }
-                continue
+                return
             }
             if ($line.StartsWith('EVENT,', [StringComparison]::Ordinal)) {
                 try {
                     $event = ConvertFrom-AppEventLine -Line $line
                     $rowValues = @(
-                        [uint64]$stopwatch.ElapsedMilliseconds,
-                        [DateTimeOffset]::UtcNow.ToString('O')
+                        $lineCaptureElapsedMs,
+                        $lineHostReceivedUtc
                     )
                     foreach ($column in (Get-AppEventColumnNames)) {
                         $rowValues += $event.$column
@@ -344,14 +400,14 @@ try {
                 } catch {
                     $eventParseErrorCount++
                 }
-                continue
+                return
             }
             if ($line.StartsWith('MC,', [StringComparison]::Ordinal)) {
                 try {
                     $sample = ConvertFrom-MotorCaptureSampleLine -Line $line
                     $rowValues = @(
-                        [uint64]$stopwatch.ElapsedMilliseconds,
-                        [DateTimeOffset]::UtcNow.ToString('O')
+                        $lineCaptureElapsedMs,
+                        $lineHostReceivedUtc
                     )
                     foreach ($column in (Get-MotorCaptureColumnNames)) {
                         $rowValues += $sample.$column
@@ -362,14 +418,14 @@ try {
                 } catch {
                     $motorCaptureParseErrorCount++
                 }
-                continue
+                return
             }
             if ($line.StartsWith('MCAP,', [StringComparison]::Ordinal)) {
                 try {
                     $event = ConvertFrom-MotorCaptureEventLine -Line $line
                     $rowValues = @(
-                        [uint64]$stopwatch.ElapsedMilliseconds,
-                        [DateTimeOffset]::UtcNow.ToString('O')
+                        $lineCaptureElapsedMs,
+                        $lineHostReceivedUtc
                     )
                     foreach ($column in (Get-MotorCaptureEventColumnNames)) {
                         $rowValues += $event.$column
@@ -380,14 +436,14 @@ try {
                 } catch {
                     $motorCaptureParseErrorCount++
                 }
-                continue
+                return
             }
             if ($line.StartsWith('SC,', [StringComparison]::Ordinal)) {
                 try {
                     $sample = ConvertFrom-SpeedCaptureSampleLine -Line $line
                     $rowValues = @(
-                        [uint64]$stopwatch.ElapsedMilliseconds,
-                        [DateTimeOffset]::UtcNow.ToString('O')
+                        $lineCaptureElapsedMs,
+                        $lineHostReceivedUtc
                     )
                     foreach ($column in (Get-SpeedCaptureColumnNames)) {
                         $rowValues += $sample.$column
@@ -398,14 +454,14 @@ try {
                 } catch {
                     $speedCaptureParseErrorCount++
                 }
-                continue
+                return
             }
             if ($line.StartsWith('SCAP,', [StringComparison]::Ordinal)) {
                 try {
                     $event = ConvertFrom-SpeedCaptureEventLine -Line $line
                     $rowValues = @(
-                        [uint64]$stopwatch.ElapsedMilliseconds,
-                        [DateTimeOffset]::UtcNow.ToString('O')
+                        $lineCaptureElapsedMs,
+                        $lineHostReceivedUtc
                     )
                     foreach ($column in (Get-SpeedCaptureEventColumnNames)) {
                         $rowValues += $event.$column
@@ -416,14 +472,14 @@ try {
                 } catch {
                     $speedCaptureParseErrorCount++
                 }
-                continue
+                return
             }
             if ($line.StartsWith('IC,', [StringComparison]::Ordinal)) {
                 try {
                     $sample = ConvertFrom-ImuCaptureSampleLine -Line $line
                     $rowValues = @(
-                        [uint64]$stopwatch.ElapsedMilliseconds,
-                        [DateTimeOffset]::UtcNow.ToString('O')
+                        $lineCaptureElapsedMs,
+                        $lineHostReceivedUtc
                     )
                     foreach ($column in (Get-ImuCaptureColumnNames)) {
                         $rowValues += $sample.$column
@@ -434,14 +490,14 @@ try {
                 } catch {
                     $imuCaptureParseErrorCount++
                 }
-                continue
+                return
             }
             if ($line.StartsWith('ICAP,', [StringComparison]::Ordinal)) {
                 try {
                     $event = ConvertFrom-ImuCaptureEventLine -Line $line
                     $rowValues = @(
-                        [uint64]$stopwatch.ElapsedMilliseconds,
-                        [DateTimeOffset]::UtcNow.ToString('O')
+                        $lineCaptureElapsedMs,
+                        $lineHostReceivedUtc
                     )
                     foreach ($column in (Get-ImuCaptureEventColumnNames)) {
                         $rowValues += $event.$column
@@ -452,12 +508,16 @@ try {
                 } catch {
                     $imuCaptureParseErrorCount++
                 }
-                continue
+                return
             }
             if (-not [string]::IsNullOrEmpty($line)) {
                 $nonTelemetryLineCount++
             }
         }
+    $offlineParseStopwatch.Stop()
+    $offlineParseDurationMs = [uint64]$offlineParseStopwatch.ElapsedMilliseconds
+    if ($parsedTimingRecordCount -ne $rawTimingRecordCount) {
+        throw "在线与离线串口块时刻记录数不一致：$rawTimingRecordCount / $parsedTimingRecordCount"
     }
 
     $outcome = 'completed'
@@ -465,8 +525,11 @@ try {
     $failureMessage = $_.Exception.Message
     throw
 } finally {
+    if ($actualDurationMs -eq 0) {
+        $actualDurationMs = [uint64]$stopwatch.ElapsedMilliseconds
+        $endedUtc = [DateTimeOffset]::UtcNow
+    }
     $stopwatch.Stop()
-    $endedUtc = [DateTimeOffset]::UtcNow
     if ($serial.IsOpen) {
         $serial.Close()
     }
@@ -474,6 +537,12 @@ try {
     if ($null -ne $rawStream) {
         $rawStream.Flush()
         $rawStream.Dispose()
+    }
+    if ($null -ne $rawTimingWriter) {
+        $rawTimingWriter.Flush()
+        $rawTimingWriter.Dispose()
+    } elseif ($null -ne $rawTimingStream) {
+        $rawTimingStream.Dispose()
     }
     if ($null -ne $telemetryWriter) {
         $telemetryWriter.Flush()
@@ -515,11 +584,14 @@ try {
     }
 
     $metadata = [ordered]@{
-        schema_version = 3
+        schema_version = 4
         tool = 'tools/capture_serial.ps1'
         tool_sha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
         library_sha256 = (Get-FileHash `
             -LiteralPath (Join-Path $PSScriptRoot 'serial_capture_lib.ps1') `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+        raw_reader_sha256 = (Get-FileHash `
+            -LiteralPath (Join-Path $PSScriptRoot 'serial_capture_raw.ps1') `
             -Algorithm SHA256).Hash.ToLowerInvariant()
         outcome = $outcome
         failure_message = $failureMessage
@@ -529,7 +601,7 @@ try {
         started_utc = $startedUtc.ToString('O')
         ended_utc = $endedUtc.ToString('O')
         requested_duration_seconds = $DurationSeconds
-        actual_duration_ms = [uint64]$stopwatch.ElapsedMilliseconds
+        actual_duration_ms = $actualDurationMs
         host = [ordered]@{
             computer_name = [Environment]::MachineName
             os_version = [Environment]::OSVersion.VersionString
@@ -549,8 +621,20 @@ try {
         safety = [ordered]@{
             non_status_commands_allowed = [bool]$AllowNonStatusCommands
         }
+        processing = [ordered]@{
+            mode = 'raw_first_offline_parse'
+            offline_parse_duration_ms = $offlineParseDurationMs
+            bounded_end_drain_bytes = $endDrainByteCount
+            raw_chunk_timing_record_bytes = 24
+            raw_chunk_timing_sha256 = if (Test-Path -LiteralPath $rawTimingPath) {
+                (Get-FileHash -LiteralPath $rawTimingPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            } else {
+                $null
+            }
+        }
         counts = [ordered]@{
             raw_bytes = $rawByteCount
+            raw_chunk_timing_records = $rawTimingRecordCount
             complete_lines = $completeLineCount
             telemetry_rows = $telemetryRowCount
             telemetry_parse_errors = $telemetryParseErrorCount
@@ -574,10 +658,11 @@ try {
             non_telemetry_lines = $nonTelemetryLineCount
             commands_scheduled = $schedule.Count
             commands_sent = $commandSentCount
-            trailing_partial_characters = $pendingText.Length
+            trailing_partial_characters = $trailingPartialCharacterCount
         }
         artifacts = [ordered]@{
             raw_uart_log = 'raw_uart.log'
+            raw_chunk_timing = 'raw_chunk_timing.bin'
             telemetry_csv = 'telemetry.csv'
             stat_csv = 'stat.csv'
             imuq_csv = 'imuq.csv'

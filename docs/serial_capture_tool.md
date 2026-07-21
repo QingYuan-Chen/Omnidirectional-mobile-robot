@@ -183,3 +183,22 @@ Windows `SerialPort` 默认 4,096 B 接收缓冲边界：板端记录器和 UART
 出现四段整块字节缺失、IC/STAT 拼接并缺少 END。工具因此固定使用 65,536 B 接收缓冲，
 并在 `metadata.serial.read_buffer_bytes` 记录实际配置；原始读取数组仍为 4,096 B，避免放大
 单次PowerShell逐行解析成本。该失败目录保留，不能用后续成功结果覆盖。
+
+唯一 64 KiB 复验 `captures/20260721-154902693_COM10/` 仍只保存 635/1,221 条 IC，并有
+3 个解析错误；板端 STOP/STATUS/BEGIN/END、记录器三计数、源 drop、UART/export 均闭合为
+零错误。该结果证明扩大接收缓冲不能消除在线解析和多 CSV 写入阻塞，失败目录继续保留。
+
+当前工具采用 raw-first/offline-parse：在线循环只调度命令、读取串口、原样写入 `raw_uart.log`
+并向 `raw_chunk_timing.bin` 追加 24 B 定长记录。每条记录依次保存该块累计结束偏移、采集相对
+毫秒和 UTC ticks；固定时长到期后只按一次 `BytesToRead` 快照有界 drain，不等待持续遥测归零，
+随即关闭串口。离线 reader 以包含换行符的块时刻恢复 `capture_elapsed_ms` 和
+`host_received_utc`，再运行原有各 schema 解析与 CSV 分派，因此采集时间不会被 PowerShell
+解析吞吐反压，既有主机时间语义也不改写。
+
+metadata 升级为 schema 4：保留原字段，并新增 `raw_reader_sha256`、
+`processing.mode=raw_first_offline_parse`、独立 `offline_parse_duration_ms`、有界 drain 字节数、
+24 B timing 记录宽度/哈希/数量和 sidecar 产物名。`actual_duration_ms`、`ended_utc` 仍只描述
+在线采集窗，不包含离线解析。超过 64 KiB、1,221 条 IC、跨块/CRLF/尾残片、时刻单调和 raw
+哈希不变的测试在 PowerShell 7/5.1 下各 1,286 项断言通过，统一主机测试 27/27、全部脚本
+两版本解析错误为 0。该软件提交推送后才允许一次新的阶段 4 零运动复验；若仍丢块，不得继续
+追加相同实采。

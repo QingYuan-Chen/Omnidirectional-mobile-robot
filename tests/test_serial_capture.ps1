@@ -1,6 +1,7 @@
 ﻿$ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\tools\serial_capture_lib.ps1')
+. (Join-Path $PSScriptRoot '..\tools\serial_capture_raw.ps1')
 
 $assertionCount = 0
 
@@ -210,6 +211,97 @@ try {
 } finally {
     if (Test-Path -LiteralPath $temporaryDirectory -PathType Container) {
         Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force
+    }
+}
+
+$rawTestDirectory = Join-Path `
+    ([IO.Path]::GetTempPath()) `
+    ('serial-capture-raw-test-' + [Guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($rawTestDirectory)
+try {
+    $rawTestPath = Join-Path $rawTestDirectory 'raw_uart.log'
+    $timingTestPath = Join-Path $rawTestDirectory 'raw_chunk_timing.bin'
+    $rawBuilder = [Text.StringBuilder]::new()
+    [void]$rawBuilder.Append("ICAP,1,STARTED,1,0,1700,0,0,0`r`n")
+    [void]$rawBuilder.Append("ICAP,1,BEGIN,2,1221,1700,0,0,0`r`n")
+    for ($i = 0; $i -lt 1221; $i++) {
+        [void]$rawBuilder.Append((
+            'IC,1,{0},{1},{2},{3},0,8,100,-200,8192,1,-2,3,8064,3,1' -f `
+                $i,
+                (1000 + $i),
+                (2000 + $i),
+                (3000 + 5 * $i)))
+        [void]$rawBuilder.Append("`r`n")
+    }
+    [void]$rawBuilder.Append("ICAP,1,END,2,1221,1700,0,0,0`r`n")
+    [void]$rawBuilder.Append('PARTIAL')
+    $rawBytes = [Text.Encoding]::ASCII.GetBytes($rawBuilder.ToString())
+    Assert-True ($rawBytes.Length -gt 65536) '合成原始流超过 64 KiB'
+    [IO.File]::WriteAllBytes($rawTestPath, $rawBytes)
+    $rawHashBefore = (Get-FileHash -LiteralPath $rawTestPath -Algorithm SHA256).Hash
+
+    $timingStream = [IO.File]::Open(
+        $timingTestPath,
+        [IO.FileMode]::Create,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::Read)
+    $timingWriter = [IO.BinaryWriter]::new($timingStream)
+    $chunkSizes = @(997, 4096, 17, 8191, 2048)
+    $offset = [uint64]0
+    $chunkIndex = 0
+    $baseUtcTicks = [DateTimeOffset]::UtcNow.UtcDateTime.Ticks
+    try {
+        while ($offset -lt [uint64]$rawBytes.Length) {
+            $nextOffset = [Math]::Min(
+                [uint64]$rawBytes.Length,
+                $offset + [uint64]$chunkSizes[$chunkIndex % $chunkSizes.Count])
+            $timingWriter.Write([uint64]$nextOffset)
+            $timingWriter.Write([uint64](10 + 3 * $chunkIndex))
+            $timingWriter.Write([int64]($baseUtcTicks + 10000 * $chunkIndex))
+            $offset = $nextOffset
+            $chunkIndex++
+        }
+    } finally {
+        $timingWriter.Dispose()
+    }
+
+    $rawLineCount = 0
+    $rawImuCount = 0
+    $rawEventCount = 0
+    $lastElapsedMs = [uint64]0
+    $rawSummary = $null
+    Read-SerialCaptureRawLine -RawPath $rawTestPath -TimingPath $timingTestPath |
+        ForEach-Object {
+            if ($_.kind -ceq 'summary') {
+                $rawSummary = $_
+                return
+            }
+            $rawLineCount++
+            Assert-True ([uint64]$_.capture_elapsed_ms -ge $lastElapsedMs) `
+                '离线行时刻保持单调'
+            $lastElapsedMs = [uint64]$_.capture_elapsed_ms
+            if ($_.line.StartsWith('IC,', [StringComparison]::Ordinal)) {
+                [void](ConvertFrom-ImuCaptureSampleLine -Line $_.line)
+                $rawImuCount++
+            } elseif ($_.line.StartsWith('ICAP,', [StringComparison]::Ordinal)) {
+                [void](ConvertFrom-ImuCaptureEventLine -Line $_.line)
+                $rawEventCount++
+            }
+        }
+
+    Assert-True ($rawLineCount -eq 1224) '离线重组全部完整行'
+    Assert-True ($rawImuCount -eq 1221) '离线重组全部 IMU 样本'
+    Assert-True ($rawEventCount -eq 3) '离线重组全部 IMU 事件'
+    Assert-True ($null -ne $rawSummary -and
+                 $rawSummary.trailing_partial_characters -eq 7) '保留尾残片计数'
+    Assert-True ($rawSummary.raw_bytes -eq [uint64]$rawBytes.Length -and
+                 $rawSummary.timing_records -eq [uint64]$chunkIndex) `
+        '原始字节与块时刻记录闭合'
+    $rawHashAfter = (Get-FileHash -LiteralPath $rawTestPath -Algorithm SHA256).Hash
+    Assert-True ($rawHashAfter -ceq $rawHashBefore) '离线解析不修改原始字节'
+} finally {
+    if (Test-Path -LiteralPath $rawTestDirectory -PathType Container) {
+        Remove-Item -LiteralPath $rawTestDirectory -Recurse -Force
     }
 }
 

@@ -546,3 +546,11 @@
 - 复验 `captures/20260721-153409644_COM10/` 的板端 STOP/STATUS/BEGIN 均报告 1,224 样本、容量 1,700，记录器 dropped/duplicate/source_gap 均为 0；30 s IMUQ 源丢样及其他 IMU 错误也始终为 0。因此 3 ms 轮询已经关闭原先的源丢样问题。
 - 本轮主机只保存 691 条有效 IC 和 4 条 ICAP，缺少 END，并出现 STAT/IC 解析错误、1 个非遥测行和 64 字符尾残片。原始索引在 297→404、501→648、747→836、936→1055 处发生四段整块缺失，末端还有 IC/STAT 拼接；严格分析据此 `accepted=false`。板端 UART、TX fault、格式、入队和导出错误均为 0。
 - Windows `SerialPort` 默认 `ReadBufferSize` 实测只有 4,096 B，无法吸收 1,224 行高速导出期间 PowerShell 实时解析造成的积压。主机工具已把接收缓冲固定为 65,536 B，并写入 `metadata.serial.read_buffer_bytes`；PowerShell 7/5.1 串口测试各 55 项和脚本解析通过。该失败证据完整保留；下一次是针对主机缓冲修复的有界复验，不是无修改地连续追加相同测试。阶段 4 仍未完成，阶段 5-7 不推进。
+
+## 2026-07-21：阶段 4 的 64 KiB 主机复验仍失败，采集与解析改为两阶段
+
+- 唯一 64 KiB 正式复验 `captures/20260721-154902693_COM10/` 继续保留为拒绝证据。板端 STOP/STATUS/BEGIN/END 均报告 1,221 个样本、容量 1,700，记录器 dropped/duplicate/source_gap、IMU source drop、UART、TX fault 和 export 错误均为 0；板端轮询与记录器链没有回退。
+- 主机只保存 635 条有效 IC 和 5 条 ICAP，并有 3 个 IMU 解析错误，严格分析 `accepted=false`。虽然存在整块字节缺失，保留下来的首尾传感器时间戳仍覆盖全部 1,220 个 sensor steps，且传感器理论时长与主机板端 tick 时长一致；这进一步证明缺失发生在板后接收链，64 KiB 缓冲本身仍不足以吸收在线逐行解析和多 CSV 同步写入造成的停顿。
+- 工具现改为两阶段：采集期只执行命令调度、原始字节落盘和每接收块 24 B 的结束偏移/相对毫秒/UTC ticks 记录，不执行 schema 解析或逐行 CSV 写入；固定采集时长到期后只按当时 `BytesToRead` 快照做一次有界 drain，随即关闭串口，再离线重放 raw 生成全部 CSV。每行仍使用包含其换行符的接收块时刻，保持既有 `capture_elapsed_ms`/`host_received_utc` 语义。
+- metadata 升级为 schema 4，新增 `raw_first_offline_parse` 模式、raw reader 与 timing sidecar 哈希、24 B 记录宽度、块记录数、有界 drain 字节数和独立离线解析耗时；`actual_duration_ms` 与 `ended_utc` 仍只描述固定在线采集窗，不混入离线处理。
+- 大于 64 KiB、1,221 条 IC、跨块/CRLF/尾残片、时刻单调和 raw 哈希不变的合成回归在 PowerShell 7 与 Windows PowerShell 5.1 下各 1,286 项断言通过；统一主机测试 27/27、全部 PowerShell 脚本在两个版本下解析错误为 0。当前只是新主机架构软件完成；独立提交推送前不复验，提交后只允许一次总体系统上电、零运动的新架构复验。阶段 4 未完成，阶段 5-7 不推进。

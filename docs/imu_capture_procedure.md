@@ -73,21 +73,35 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 上述一条保留首轮结束时的证据边界。随后目视核对 QMI8658A 数据手册原页和 H60 图纸，已确认普通 DRDY 固定从 INT2 输出，而图纸仅把 INT1 接到 PD7；旧配置 `CTRL1=0x50`、`CTRL7=0x83` 启用未连接的 INT2 输出并让 INT1 保持 High-Z。因此首轮 11 ms 周期已定位为端点不匹配导致的 10 ms 超时兜底，不是芯片或板线损坏。修复软件改为 `CTRL1=0x40`、3 ms 绝对周期轮询 STATUSINT/SyncSample 锁存帧，删除 thread flag/EXTI callback，并把 PD7 改为下拉普通输入、关闭 EXTI9_5；当前尚未刷写复验。
 
-## 轮询修复后的首轮复验与主机缓冲修复
+## 轮询修复后的两次主机接收失败
 
 提交 `3c6a714` 已刷写。`captures/20260721-153329990_COM10/` 的纯 `STATUS` 与
 `captures/20260721-153409644_COM10/` 的板端状态均证明源丢样保持为 0，STOP/STATUS/BEGIN
 一致报告 1,224 个完整记录；但主机因默认 4,096 B 串口缓冲只保存 691 条有效 IC，缺 END
 并出现四段整块字节缺失，严格门仍拒绝。该目录作为主机接收失败证据永久保留。
 
-采集工具现将 `ReadBufferSize` 固定为 65,536 B，并在 metadata 记录该值。下一次只验证这个
-主机缓冲修复，不重复修改 IMU 固件；仍保持总体系统上电、零运动：
+随后只执行了一次有修改依据的 64 KiB 复验 `captures/20260721-154902693_COM10/`。板端
+STOP/STATUS/BEGIN/END 均为 1,221/1,700，记录器 dropped/duplicate/source_gap、源 drop、
+UART/export 错误均为 0；主机仍只得到 635 条 IC、5 条 ICAP 和 3 个解析错误，严格结果
+`accepted=false`。缺块条件下总 sensor steps=1,220，传感器理论时长与主机板端 tick 时长
+一致；这只进一步定位主机接收损失，不能把不完整证据改判为通过。64 KiB 缓冲方案至此停止。
+
+## raw-first/offline-parse 新架构复验
+
+新工具在固定在线采集窗内不再解析行或写入数据 CSV，只保存 raw 字节和每块 24 B 的结束偏移、
+相对毫秒、UTC ticks。到期后只读取一次 `BytesToRead` 快照并有界 drain 该批字节，随后关闭串口；
+离线阶段再按块时刻重放 raw、恢复原有主机时间列并生成全部 CSV。metadata schema 4 分别记录
+`actual_duration_ms`、`ended_utc` 与离线解析耗时，同时记录 processing mode、raw reader/timing
+sidecar 哈希、24 B 宽度、记录数和 drain 字节数。
+
+只有该工具修改完成独立提交并推送后，才执行一次新架构复验；不重复修改 IMU 固件，仍保持
+总体系统上电、零运动：
 
 1. 先做独立纯 `STATUS`，核对 PWM 0、`motor_state=0`、ready、无故障/ESTOP 和全部错误计数。
 2. 清除 COM10 旧积压并等待在途帧排净；按同一计划静置采集约 5 至 6 s并导出，全程不得发送 `ARM/PWM`。
-3. metadata 必须记录 `serial.read_buffer_bytes=65536`；ICAP BEGIN/END、1,224 条左右的 IC、解析零错误和索引连续必须同时成立。
+3. metadata 必须为 schema 4、`processing.mode=raw_first_offline_parse`，并记录 24 B timing sidecar、哈希、块数、在线时长、离线耗时和有界 drain；ICAP BEGIN/END、约 1,221 条 IC、解析零错误和索引连续必须同时成立。
 4. 运行严格分析器，确认记录器/源丢样均为 0、时间戳步长和约 224.2 Hz 频率合理、时长一致且导出闭合。时间戳回绕若本次短窗未发生，继续保留到后续长时板测。
-5. 若仍有整块主机丢字节，不再重复实采，转为把串口读取与逐行解析解耦后再评审。
+5. 若 raw-first 新架构仍有整块主机丢字节，不再重复实采，转为独立串口/驱动层诊断后再评审。
 
 只有复验严格门全部通过后，阶段 4 才能从“修复软件完成、待单次总体系统上电零运动复验”改为整阶段完成。阶段 3
 低频分型遥测已经完成；阶段 5 的故障注入/栈堆水位和阶段 6 的 500 ms 超时、
@@ -96,9 +110,9 @@ Brake/Coast/旧队列失效仍是独立债务，不能由本次 IMU 记录器代
 ## 离线验证记录
 
 - 统一主机测试：27/27。
-- 串口解析：PowerShell 7 与 Windows PowerShell 5.1 各 55 项断言。
+- 串口与 raw 离线重组：PowerShell 7 与 Windows PowerShell 5.1 各 1,286 项断言。
 - IMU 分析专项：两个 PowerShell 版本各 8 项断言。
-- 38 个 PowerShell 脚本：两个版本解析错误均为 0。
+- 全部 PowerShell 脚本：两个版本解析错误均为 0。
 - DRDY 端点修复后 ARM Debug/Release 构建各 72/72 通过：RAM 47,864 B，CCMRAM 61,628 B；Flash
   101,608/56,292 B。
 - `app_comm_protocol.c`、`app_imu_capture.c`、`app_tasks.c`、`bsp_imu.c` 通过严格告警与
