@@ -554,3 +554,12 @@
 - 工具现改为两阶段：采集期只执行命令调度、原始字节落盘和每接收块 24 B 的结束偏移/相对毫秒/UTC ticks 记录，不执行 schema 解析或逐行 CSV 写入；固定采集时长到期后只按当时 `BytesToRead` 快照做一次有界 drain，随即关闭串口，再离线重放 raw 生成全部 CSV。每行仍使用包含其换行符的接收块时刻，保持既有 `capture_elapsed_ms`/`host_received_utc` 语义。
 - metadata 升级为 schema 4，新增 `raw_first_offline_parse` 模式、raw reader 与 timing sidecar 哈希、24 B 记录宽度、块记录数、有界 drain 字节数和独立离线解析耗时；`actual_duration_ms` 与 `ended_utc` 仍只描述固定在线采集窗，不混入离线处理。
 - 大于 64 KiB、1,221 条 IC、跨块/CRLF/尾残片、时刻单调和 raw 哈希不变的合成回归在 PowerShell 7 与 Windows PowerShell 5.1 下各 1,286 项断言通过；统一主机测试 27/27、全部 PowerShell 脚本在两个版本下解析错误为 0。当前只是新主机架构软件完成；独立提交推送前不复验，提交后只允许一次总体系统上电、零运动的新架构复验。阶段 4 未完成，阶段 5-7 不推进。
+
+## 2026-07-21：阶段 4 raw-first 新架构唯一正式复验通过
+
+- 权威证据 `captures/20260721-160532766_COM10/` 使用板上固件 `3c6a714`、仓库提交 `62f1799`、COM10 230400/8N1，持续 30 s，全程没有发送 `ARM/PWM` 或执行运动。metadata schema 4 确认 `raw_first_offline_parse`，在线采集 30,003 ms、离线解析 3,027 ms；raw 为 211,123 B，timing sidecar 为 1,152 条定长记录、27,648 B，有界结束 drain 为 0。
+- 主机完整保存 1,223 条 IC、5 条 ICAP，IMU parse error=0。STARTED 为 0 样本，STOPPED/STATUS/BEGIN/END 均为 1,223/1,700，记录器 dropped/duplicate/source_gap 全为 0；严格分析 `accepted=true`，13/13 门全部通过，索引、接受 sequence、STATUS0 和 source drop 都没有断点或增量。
+- sensor timestamp 每步严格为 1，总 1,222 steps 对应 5,450.491 ms；host tick 累计 5,520 ms、单步 3-6 ms，时长误差 69.509 ms，小于 109.010 ms 容差。IMUQ 的 source drop、read/consecutive/backoff/duplicate/spike/estimator fault 以及板端 UART、格式、入队、export、控制和 ADC 错误最大值均为 0。
+- 结束状态为 11.470 V，目标/实际 PWM 与 `motor_state` 为 0，ready=1，inhibit/fault/ESTOP 为 0。原始温度 8,148-8,164，换算约 31.828-31.891 °C，关闭此前“temperature 全 0”的读取疑点；sensor_status 恒 3、health 恒 1。
+- raw 开头约 20 ms 仍保留无线桥旧缓存边界：1 个 STAT 解析错误和 2 个非协议残段，发生在 CAPTURE START 实际 501 ms 前。本次不能写成“全流解析 0”；但 IMU 严格链自身解析为 0且13/13通过，因此不阻断阶段 4 的限定验收。`153409644`、`154902693` 两份失败证据继续保留，不被成功复验覆盖。
+- 静置轴均值和加速度模长 8,738.873 counts（约 1.067 g）只建立观测；没有已知姿态基准，不能据此关闭轴向或量程。24 位时间戳在短窗内未回绕，也不能冒充回绕验收。阶段 4 仅按“板内 IMU 高速采集与完整导出”定义完成；当前路线移动到阶段 5但不在本切片开始阶段 5，轴向/量程和长时回绕债务随阶段 5/后续长时测试继续，阶段 6-7不推进。
